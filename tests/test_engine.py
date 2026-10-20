@@ -494,3 +494,52 @@ def test_fetch_revision_validasi(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod.requests, "get", lambda *a, **k: Resp(bad_rev))
     with pytest.raises(RuntimeError, match="revision_number"):
         main_mod._fetch_revision(cfg, LOG)
+
+
+# ---------------------------------------------------------------------------
+# tts.py — _synth_one kompatibel piper-tts 1.2 (synthesize) & 1.3+ (synthesize_wav)
+# ---------------------------------------------------------------------------
+
+def test_synth_one_piper_12_pakai_synthesize(tmp_path):
+    """piper-tts 1.2.0 (versi di-pin) cuma punya synthesize(text, wav_file)."""
+    from engine import tts
+
+    written = {}
+
+    class FakeWav:
+        def setnchannels(self, n): written['ch'] = n
+        def setsampwidth(self, n): written['sw'] = n
+        def setframerate(self, n): written['fr'] = n
+        def writeframes(self, b): written['frames'] = len(b)
+
+    class Voice12:
+        def synthesize(self, text, wav_file, syn_config=None):
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(22050)
+            wav_file.writeframes(b"\x00\x00" * 22050)
+
+    dst = tmp_path / "line_00000.wav"
+    # wave.open asli dipakai; pastikan file WAV valid dihasilkan
+    tts._synth_one(Voice12(), "hello world", dst)
+    assert dst.exists() and dst.stat().st_size > 1000
+    import wave
+    with wave.open(str(dst), "rb") as w:
+        assert w.getnchannels() == 1 and w.getframerate() == 22050
+
+
+def test_synth_one_piper_13_pakai_synthesize_wav(tmp_path):
+    """Bila piper punya synthesize_wav (1.3+), jalur itu yang dipakai."""
+    from engine import tts
+
+    called = {}
+
+    class Voice13:
+        def synthesize_wav(self, text, fh):
+            called['text'] = text
+            fh.write(b"RIFF" + b"\x00" * 4000)
+
+    dst = tmp_path / "line_00001.wav"
+    tts._synth_one(Voice13(), "hello", dst)
+    assert called.get('text') == "hello"
+    assert dst.exists() and dst.stat().st_size > 1000

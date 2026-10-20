@@ -23,6 +23,7 @@ Kenapa sintesis per segmen, bukan satu teks panjang?
   - Kalau satu segmen gagal, segmen lain tetap jadi (partial success).
   Biayanya: penggabungan audio. Kita pakai ffmpeg concat, murah.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -32,6 +33,7 @@ import subprocess
 import tarfile
 import time
 import urllib.request
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -152,6 +154,23 @@ def _try_python_backend(log: Logger) -> object | None:
         return None
 
 
+def _synth_one(voice: object, text: str, dst: Path) -> None:
+    """Sintesis satu teks → WAV `dst`, kompatibel antar-versi piper-tts.
+
+    piper-tts 1.2.0 (versi yang di-pin requirements) hanya punya
+    `synthesize(text, wav_file: wave.Wave_write)`; `synthesize_wav(text, fh)`
+    baru ada di 1.3+. Tanpa wrapper ini, setiap baris AttributeError dan
+    seluruh job gagal di TTS (padahal load voice sukses, jadi fallback
+    binary tidak pernah jalan).
+    """
+    if hasattr(voice, "synthesize_wav"):
+        with dst.open("wb") as fh:
+            voice.synthesize_wav(text, fh)  # type: ignore[attr-defined]
+    else:
+        with wave.open(str(dst), "wb") as wav_file:
+            voice.synthesize(text, wav_file)  # type: ignore[attr-defined]
+
+
 def _synth_python(
     log: Logger,
     voice_cls: object,
@@ -168,8 +187,7 @@ def _synth_python(
         if not text.strip():
             continue
         try:
-            with dst.open("wb") as fh:
-                voice.synthesize_wav(text, fh)  # type: ignore[attr-defined]
+            _synth_one(voice, text, dst)
             if dst.stat().st_size > 1000:
                 files.append(dst)
             else:
@@ -206,7 +224,9 @@ def _ensure_binary(log: Logger) -> Path | None:
             for member in tf.getmembers():
                 target = (bin_dir / member.name).resolve()
                 if not str(target).startswith(str(bin_dir.resolve())):
-                    raise TtsError("piper_install_failed", f"path tidak aman di arsip: {member.name}")
+                    raise TtsError(
+                        "piper_install_failed", f"path tidak aman di arsip: {member.name}"
+                    )
             tf.extractall(bin_dir, filter="data")  # noqa: S202
     except tarfile.TarError as e:
         raise TtsError("piper_install_failed", f"ekstraksi binary piper gagal: {e}") from e
@@ -229,9 +249,12 @@ def _synth_binary(log: Logger, exe: Path, model: Path, config: Path, text: str, 
     proc = subprocess.run(
         [
             str(exe),
-            "--model", str(model),
-            "--config", str(config),
-            "--output_file", str(dst),
+            "--model",
+            str(model),
+            "--config",
+            str(config),
+            "--output_file",
+            str(dst),
         ],
         input=text.encode("utf-8"),
         capture_output=True,
@@ -298,9 +321,7 @@ def synthesize_segments(
 
     merged = concat_with_gaps(log, files, out_dir / "merged.wav", gap_ms=gap_ms)
     elapsed = time.monotonic() - t0
-    log.info(
-        f"TTS selesai: {len(files)} segmen, {failed} gagal, backend={backend}, {elapsed:.1f}s"
-    )
+    log.info(f"TTS selesai: {len(files)} segmen, {failed} gagal, backend={backend}, {elapsed:.1f}s")
     return TtsResult(
         wav_dir=out_dir,
         files=files,
@@ -329,10 +350,20 @@ def concat_with_gaps(log: Logger, wavs: list[Path], dest: Path, gap_ms: int = 25
         # buat satu file silence yang dipakai berulang
         subprocess.run(
             [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
-                "-t", f"{gap_ms / 1000:.3f}",
-                "-c:a", "pcm_s16le", str(silence),
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=22050:cl=mono",
+                "-t",
+                f"{gap_ms / 1000:.3f}",
+                "-c:a",
+                "pcm_s16le",
+                str(silence),
             ],
             capture_output=True,
             check=True,
@@ -346,9 +377,23 @@ def concat_with_gaps(log: Logger, wavs: list[Path], dest: Path, gap_ms: int = 25
 
         proc = subprocess.run(
             [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "concat", "-safe", "0", "-i", str(list_file),
-                "-c:a", "pcm_s16le", "-ar", "22050", "-ac", "1",
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_file),
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                "22050",
+                "-ac",
+                "1",
                 str(dest),
             ],
             capture_output=True,
@@ -362,9 +407,20 @@ def concat_with_gaps(log: Logger, wavs: list[Path], dest: Path, gap_ms: int = 25
             )
             proc2 = subprocess.run(
                 [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "concat", "-safe", "0", "-i", str(list_file),
-                    "-c", "copy", str(dest),
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(list_file),
+                    "-c",
+                    "copy",
+                    str(dest),
                 ],
                 capture_output=True,
                 text=True,
@@ -445,6 +501,7 @@ def selfcheck(log: Logger, voice_id: str = "en_US-lessac-medium") -> dict[str, o
 # v2 DUBBING: sintesis per baris, SEJAJAR INDEKS (untuk penempatan timeline)
 # ---------------------------------------------------------------------------
 
+
 def synthesize_lines(
     log: Logger,
     voice_id: str,
@@ -492,8 +549,7 @@ def synthesize_lines(
         ok = False
         if voice_obj is not None:
             try:
-                with dst.open("wb") as fh:
-                    voice_obj.synthesize_wav(text, fh)  # type: ignore[attr-defined]
+                _synth_one(voice_obj, text, dst)
                 ok = dst.exists() and dst.stat().st_size > 1000
                 if not ok:
                     dst.unlink(missing_ok=True)
@@ -514,5 +570,7 @@ def synthesize_lines(
             f"{missing}/{spoken} baris gagal disintesis (> {max_failure_ratio:.0%}) — hasil akan penuh keheningan",
         )
     if missing:
-        log.warn(f"{missing} baris gagal disintesis — celahnya dibiarkan hening (dilaporkan di callback)")
+        log.warn(
+            f"{missing} baris gagal disintesis — celahnya dibiarkan hening (dilaporkan di callback)"
+        )
     return results
