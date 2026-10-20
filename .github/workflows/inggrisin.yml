@@ -248,8 +248,23 @@ jobs:
             echo "PIPER_FALLBACK=binary" >> "$GITHUB_ENV"
           }
 
-      - name: Verify ffmpeg
+      # Image ubuntu-24.04 TIDAK membawa ffmpeg/ffprobe (ubuntu-22.04 masih).
+      # Pasang hanya bila hilang; ffmpeg apt (6.x) cukup untuk probe/mux/loudnorm.
+      - name: Ensure ffmpeg
         run: |
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            echo "ffmpeg tidak ada di image — instal via apt"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          else
+            echo "ffmpeg bawaan image: $(ffmpeg -version | head -1)"
+          fi
+
+      - name: Verify ffmpeg (strict — dulu lolos palsu karena pipe ke head)
+        run: |
+          set -euo pipefail
+          command -v ffmpeg
+          command -v ffprobe
           ffmpeg -version | head -1
           ffprobe -version | head -1
 

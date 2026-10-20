@@ -60,10 +60,24 @@ jobs:
             pip install -r requirements.nopiper.txt
           }
 
+      # Image ubuntu-24.04 TIDAK membawa ffmpeg/ffprobe — pasang bila hilang
+      # supaya selfcheck benar-benar menangkap environment yang pincang.
+      - name: Ensure ffmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            echo "ffmpeg tidak ada di image — instal via apt"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          else
+            echo "ffmpeg bawaan image: $(ffmpeg -version | head -1)"
+          fi
+
       - name: Environment
         run: |
           echo "runner: $RUNNER_OS / $ImageOS ($ImageVersion)"
           python --version
+          command -v ffmpeg
+          command -v ffprobe
           ffmpeg -version | head -1
           nproc; free -h | head -2
 
