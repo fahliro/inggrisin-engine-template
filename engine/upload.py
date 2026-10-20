@@ -16,9 +16,11 @@ Dua mode, dipilih otomatis oleh app lewat env:
 Untuk file besar, mode A memakai chunked/resumable di sisi app; engine cukup
 mengirim satu multipart request dengan stream.
 """
+
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import time
 from dataclasses import dataclass
@@ -56,6 +58,7 @@ def upload_result(
     content_type: str = "audio/mpeg",
     job_id: str = "",
     extra_fields: dict[str, str] | None = None,
+    auth_secret: str = "",
 ) -> UploadResult:
     if not path.exists() or path.stat().st_size == 0:
         raise UploadError("drive_upload_failed", f"File hasil tidak ada atau kosong: {path}")
@@ -65,7 +68,9 @@ def upload_result(
     name = filename or path.name
 
     if proxy_url:
-        res = _upload_via_proxy(log, proxy_url, path, name, content_type, size, job_id, extra_fields or {})
+        res = _upload_via_proxy(
+            log, proxy_url, path, name, content_type, size, job_id, extra_fields or {}, auth_secret
+        )
     else:
         token = os.environ.get("GOOGLE_ACCESS_TOKEN", "").strip()
         if not token:
@@ -89,9 +94,21 @@ def _upload_via_proxy(
     size: int,
     job_id: str,
     extra: dict[str, str],
+    auth_secret: str = "",
 ) -> UploadResult:
     sha = hashlib.sha256(path.read_bytes()).hexdigest() if size < 200 * 1024 * 1024 else ""
     data = {"job_id": job_id, "filename": filename, "sha256": sha, **extra}
+
+    # Signature HMAC atas `${job_id}.${sha256_file}` — skema sama dengan
+    # callback (lihat callback.py). App memverifikasi HMAC lalu mencocokkan
+    # sha256 dengan byte yang diterima: auth + integrity tanpa kredensial
+    # Google di runner.
+    headers = {"user-agent": "inggrisin-engine"}
+    if auth_secret:
+        digest = hmac.new(
+            auth_secret.encode(), f"{job_id}.{sha}".encode(), hashlib.sha256
+        ).hexdigest()
+        headers["x-inggrisin-signature"] = f"sha256={digest}"
 
     last = ""
     for attempt in range(1, MAX_RETRIES + 1):
@@ -102,7 +119,7 @@ def _upload_via_proxy(
                     data=data,
                     files={"file": (filename, fh, content_type)},
                     timeout=(30, 1800),
-                    headers={"user-agent": "inggrisin-engine"},
+                    headers=headers,
                 )
             if r.status_code == 200:
                 j = r.json()
@@ -123,7 +140,9 @@ def _upload_via_proxy(
             log.warn(f"upload gagal ({last}) — retry {attempt}/{MAX_RETRIES} dalam {wait}s")
             time.sleep(wait)
 
-    raise UploadError("drive_upload_failed", f"Upload gagal setelah {MAX_RETRIES} percobaan: {last}")
+    raise UploadError(
+        "drive_upload_failed", f"Upload gagal setelah {MAX_RETRIES} percobaan: {last}"
+    )
 
 
 def _upload_direct_drive(
@@ -157,11 +176,11 @@ def _upload_direct_drive(
     body = b"".join(
         [
             f"--{boundary}\r\n".encode(),
-            b'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+            b"Content-Type: application/json; charset=UTF-8\r\n\r\n",
             json.dumps(metadata).encode(),
             b"\r\n",
             f"--{boundary}\r\n".encode(),
-            f'Content-Type: {content_type}\r\n\r\n'.encode(),
+            f"Content-Type: {content_type}\r\n\r\n".encode(),
             path.read_bytes(),
             b"\r\n",
             f"--{boundary}--\r\n".encode(),

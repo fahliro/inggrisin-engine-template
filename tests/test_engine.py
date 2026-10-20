@@ -543,3 +543,48 @@ def test_synth_one_piper_13_pakai_synthesize_wav(tmp_path):
     tts._synth_one(Voice13(), "hello", dst)
     assert called.get('text') == "hello"
     assert dst.exists() and dst.stat().st_size > 1000
+
+
+# ---------------------------------------------------------------------------
+# upload.py — proxy upload menandatangani `${job_id}.${sha256}` (skema callback)
+# ---------------------------------------------------------------------------
+
+def test_upload_proxy_mengirim_signature_hmac(tmp_path, monkeypatch):
+    import hashlib
+    import hmac as hmac_mod
+
+    from engine import upload as upload_mod
+
+    p = tmp_path / "hasil.mp4"
+    p.write_bytes(b"x" * 2048)
+    captured = {}
+
+    class R:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "drive_file_id": "fid123",
+                "drive_web_url": "https://drive.google.com/file/d/fid123/view",
+                "bytes": 2048,
+            }
+
+    def fake_post(url, data=None, files=None, timeout=None, headers=None):
+        captured["url"] = url
+        captured["data"] = data
+        captured["headers"] = headers
+        return R()
+
+    monkeypatch.setattr(upload_mod.requests, "post", fake_post)
+    res = upload_mod.upload_result(
+        LOG, p,
+        proxy_url="https://app.example.com/api/hooks/v1/jobs/j1/result",
+        filename="hasil.mp4", content_type="video/mp4",
+        job_id="j1", auth_secret="sekret",  # noqa: S106 — secret dummy utk test
+    )
+    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    expect = "sha256=" + hmac_mod.new(b"sekret", f"j1.{sha}".encode(), hashlib.sha256).hexdigest()
+    assert captured["headers"]["x-inggrisin-signature"] == expect
+    assert captured["data"]["sha256"] == sha
+    assert res.drive_file_id == "fid123" and res.mode == "proxy"
