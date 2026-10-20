@@ -318,7 +318,7 @@ def _chat(
             {"role": "user", "content": user},
         ],
         "temperature": 0.2,
-        "max_tokens": 8000,
+        "max_tokens": 16000,
         # Model reasoning (mis. minimax-m3.1) bisa menghabiskan max_tokens untuk
         # token reasoning sehingga `content` kosong/terpotong → llm_bad_json.
         # Matikan; model tanpa dukungan reasoning mengabaikan parameter ini
@@ -362,6 +362,16 @@ def _chat(
                 "prompt_tokens": int(usage.get("prompt_tokens") or 0),
                 "completion_tokens": int(usage.get("completion_tokens") or 0),
             }
+        if (
+            r.status_code == 400
+            and "reasoning" in body
+            and "reasoning is mandatory" in _error_detail(r).lower()
+        ):
+            # Endpoint tertentu (mis. minimax :free) MEWAJIBKAN reasoning dan
+            # menolak dimatikan → buang param-nya dan coba ulang segera.
+            body.pop("reasoning")
+            log.warn("endpoint mewajibkan reasoning — ulangi tanpa mematikannya", tag=tag)
+            continue
         if r.status_code in (401, 402, 403):
             detail = _error_detail(r)
             code = "openrouter_no_credit" if r.status_code == 402 else "openrouter_auth"

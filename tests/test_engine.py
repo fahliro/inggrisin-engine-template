@@ -319,7 +319,39 @@ def test_chat_matikan_reasoning_dan_json_mode(monkeypatch):
     translate._chat(LOG, "k", "minimax/minimax-m3.1-flash:free", "s", "u", True, "t")
     assert captured["reasoning"] == {"enabled": False}
     assert captured["response_format"] == {"type": "json_object"}
-    assert captured["max_tokens"] == 8000
+    assert captured["max_tokens"] == 16000
+
+
+def test_chat_reasoning_wajib_diulang_tanpa_param(monkeypatch):
+    """Endpoint yang MEWAJIBKAN reasoning (400) → engine buang param & ulang."""
+    calls = []
+    msg_400 = "Reasoning is mandatory for this endpoint and cannot be disabled."
+
+    class R400:
+        status_code = 400
+        text = json.dumps({"error": {"message": msg_400}})
+
+        def json(self):
+            return {"error": {"message": msg_400}}
+
+    class R200:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(dict(json))
+        return R400() if "reasoning" in json else R200()
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    content, _ = translate._chat(LOG, "k", "minimax/minimax-m3.1-flash:free", "s", "u", True, "t")
+    assert content == "{}"
+    assert len(calls) == 2
+    assert "reasoning" not in calls[1]
 
 
 def test_chat_finish_reason_length_diwarnakan(monkeypatch, capsys):
