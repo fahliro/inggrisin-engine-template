@@ -87,10 +87,16 @@ jobs:
             | tee selfcheck.json
 
       - name: Groq key smoke test
-        if: ${{ secrets.GROQ_API_KEY != '' }}
+        # CATATAN: context `secrets` TIDAK tersedia di ekspresi `if` (job maupun
+        # step) — workflow gagal parse saat dispatch. Guard dipindah ke dalam
+        # run lewat env (env BOLEH memakai secrets).
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "::warning::GROQ_API_KEY belum disetel — smoke test dilewati"
+            exit 0
+          fi
           python - <<'PY'
           import os, sys, requests
           r = requests.get(
