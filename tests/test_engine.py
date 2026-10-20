@@ -244,6 +244,62 @@ def test_translate_lewat_budget_total_clip_125(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# translate.py — _chat: cabang error HTTP OpenRouter (body + petunjuk)
+# ---------------------------------------------------------------------------
+
+class _HttpResp:
+    """Response palsu minimal untuk menguji cabang error HTTP _chat."""
+
+    def __init__(self, status_code, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text if text else (json.dumps(payload) if payload is not None else "")
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("bukan JSON")
+        return self._payload
+
+
+def test_chat_404_data_policy_menyertakan_body_dan_petunjuk(monkeypatch):
+    resp = _HttpResp(404, {"error": {"message": "No endpoints found matching your data policy"}})
+    monkeypatch.setattr(translate.requests, "post", lambda *a, **k: resp)
+    with pytest.raises(translate.TranslateError) as e:
+        translate._chat(LOG, "k", "nvidia/nemotron-3-super-120b-a12b:free", "s", "u", False, "t")
+    assert e.value.code == "openrouter_failed"
+    assert "No endpoints found matching your data policy" in e.value.message
+    assert "openrouter.ai/settings/privacy" in e.value.message
+
+
+def test_chat_404_model_paid_tanpa_petunjuk_privasi(monkeypatch):
+    resp = _HttpResp(404, {"error": {"message": "Model not found"}})
+    monkeypatch.setattr(translate.requests, "post", lambda *a, **k: resp)
+    with pytest.raises(translate.TranslateError) as e:
+        translate._chat(LOG, "k", "openai/gpt-4o-mini", "s", "u", False, "t")
+    assert e.value.code == "openrouter_failed"
+    assert "Model not found" in e.value.message
+    assert "settings/privacy" not in e.value.message
+
+
+def test_chat_402_menyertakan_body(monkeypatch):
+    resp = _HttpResp(402, {"error": {"message": "Insufficient credits — buy more at openrouter.ai"}})
+    monkeypatch.setattr(translate.requests, "post", lambda *a, **k: resp)
+    with pytest.raises(translate.TranslateError) as e:
+        translate._chat(LOG, "k", "openai/gpt-4o-mini", "s", "u", False, "t")
+    assert e.value.code == "openrouter_no_credit"
+    assert "Insufficient credits" in e.value.message
+
+
+def test_chat_body_bukan_json_tetap_aman(monkeypatch):
+    resp = _HttpResp(400, None, text="<html>Bad Request</html>")
+    monkeypatch.setattr(translate.requests, "post", lambda *a, **k: resp)
+    with pytest.raises(translate.TranslateError) as e:
+        translate._chat(LOG, "k", "m", "s", "u", False, "t")
+    assert e.value.code == "openrouter_failed"
+    assert "Bad Request" in e.value.message
+
+
+# ---------------------------------------------------------------------------
 # config.py — mode & konstanta terkunci
 # ---------------------------------------------------------------------------
 

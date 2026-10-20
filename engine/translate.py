@@ -11,6 +11,7 @@ Menggantikan polish.py (era konsep lama). Perbedaan prinsip:
   * Istilah/nama diri dipertahankan otomatis (NER oleh LLM, dikembalikan
     sebagai `terms` untuk kartu baca-saja di Studio — bukan input user).
 """
+
 from __future__ import annotations
 
 import json
@@ -127,15 +128,21 @@ def translate(
         if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
             # satu kali repair attempt untuk JSON rusak
             content, usage = _chat(
-                log, api_key, model,
+                log,
+                api_key,
+                model,
                 "Return ONLY valid JSON matching the requested schema. Fix this response:",
-                content[:6000], False, "translate-repair-json",
+                content[:6000],
+                False,
+                "translate-repair-json",
             )
             tokens["prompt"] += usage["prompt_tokens"]
             tokens["completion"] += usage["completion_tokens"]
             data = _extract_json(log, content)
         if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
-            raise TranslateError("llm_bad_json", "LLM tidak mengembalikan JSON sesuai skema (2 percobaan)")
+            raise TranslateError(
+                "llm_bad_json", "LLM tidak mengembalikan JSON sesuai skema (2 percobaan)"
+            )
         got: set[int] = set()
         for item in data["segments"]:
             if not isinstance(item, dict):
@@ -151,7 +158,9 @@ def translate(
             out[idx] = text
         for t in data.get("terms") or []:
             if isinstance(t, dict) and t.get("from"):
-                terms.append({"from": str(t.get("from"))[:80], "to": str(t.get("to") or t.get("from"))[:80]})
+                terms.append(
+                    {"from": str(t.get("from"))[:80], "to": str(t.get("to") or t.get("from"))[:80]}
+                )
         missing = [s.idx for s in batch if s.idx not in got]
         if missing:
             raise TranslateError(
@@ -168,7 +177,9 @@ def translate(
             for s in over
         )
         try:
-            content, usage = _chat(log, api_key, model, REPAIR_PROMPT, lines, True, "translate-condense")
+            content, usage = _chat(
+                log, api_key, model, REPAIR_PROMPT, lines, True, "translate-condense"
+            )
             tokens["prompt"] += usage["prompt_tokens"]
             tokens["completion"] += usage["completion_tokens"]
             data = _extract_json(log, content)
@@ -183,7 +194,9 @@ def translate(
                         if text and idx in out and len(text) < len(out[idx]):
                             out[idx] = text
         except TranslateError as e:
-            log.warn(f"repair pass gagal ({e.message}) — pakai hasil pertama, engine akan clip di 1,25×")
+            log.warn(
+                f"repair pass gagal ({e.message}) — pakai hasil pertama, engine akan clip di 1,25×"
+            )
 
     # ---- rakit hasil + hitung fit/tempo secara deterministik ---------------
     result: list[TranslatedSegment] = []
@@ -204,9 +217,14 @@ def translate(
             fit, tempo = "ok", 1.0
         result.append(
             TranslatedSegment(
-                idx=s.idx, start=s.start, end=s.end,
-                text_id=s.text, text_en=text_en,
-                fit=fit, tempo=tempo, note=note,
+                idx=s.idx,
+                start=s.start,
+                end=s.end,
+                text_id=s.text,
+                text_en=text_en,
+                fit=fit,
+                tempo=tempo,
+                note=note,
             )
         )
 
@@ -244,6 +262,42 @@ def _batch(segments: list[InSegment], max_chars: int) -> list[list[InSegment]]:
     if cur:
         out.append(cur)
     return out
+
+
+def _error_detail(r: requests.Response, limit: int = 300) -> str:
+    """Body error OpenRouter dalam bentuk ringkas — `error.message` JSON diprioritaskan.
+
+    Tanpa ini, job gagal hanya menampilkan `OpenRouter HTTP 404` di Studio —
+    tidak cukup untuk diagnosis; pesan error harus actionable.
+    """
+    raw = (r.text or "").strip().replace("\n", " ")
+    try:
+        j = r.json()
+    except ValueError:
+        j = None
+    if isinstance(j, dict):
+        msg = (j.get("error") or {}).get("message")
+        if isinstance(msg, str) and msg.strip():
+            raw = msg.strip().replace("\n", " ")
+    return raw[:limit] or "(body kosong)"
+
+
+def _data_policy_hint(model: str, detail: str) -> str:
+    """Petunjuk konkret bila model `:free` ditolak data policy user OpenRouter.
+
+    Gejala: HTTP 404 `No endpoints found matching your data policy` — terjadi
+    karena toggle privacy FREE endpoints di akun user masih OFF. Retry seberapa
+    pun tidak akan berhasil sebelum toggle dinyalakan, jadi pesan harus
+    menyebut persis ke mana user harus pergi.
+    """
+    low = detail.lower()
+    if model.endswith(":free") and ("data policy" in low or "no endpoints" in low):
+        return (
+            " | Solusi: model :free butuh izin training di akun OpenRouter — buka"
+            " https://openrouter.ai/settings/privacy lalu nyalakan 'Enable prompt logging'"
+            " + 'Enable completion logging' di bagian FREE ENDPOINTS, kemudian Coba lagi."
+        )
+    return ""
 
 
 def _chat(
@@ -298,15 +352,29 @@ def _chat(
                 "completion_tokens": int(usage.get("completion_tokens") or 0),
             }
         if r.status_code in (401, 402, 403):
-            raise TranslateError("openrouter_auth" if r.status_code != 402 else "openrouter_no_credit",
-                                 f"OpenRouter HTTP {r.status_code} (key/kredit)")
+            detail = _error_detail(r)
+            code = "openrouter_no_credit" if r.status_code == 402 else "openrouter_auth"
+            raise TranslateError(
+                code,
+                f"OpenRouter HTTP {r.status_code} (key/kredit): {detail}"
+                f"{_data_policy_hint(model, detail)}",
+            )
         if r.status_code == 429 or 500 <= r.status_code < 600:
-            last = f"HTTP {r.status_code}"
+            detail = _error_detail(r)
+            last = f"HTTP {r.status_code}: {detail}"
             if attempt == MAX_RETRIES:
-                raise TranslateError("openrouter_failed", f"OpenRouter {last} setelah {MAX_RETRIES} percobaan")
+                raise TranslateError(
+                    "openrouter_failed",
+                    f"OpenRouter {last} setelah {MAX_RETRIES} percobaan"
+                    f"{_data_policy_hint(model, detail)}",
+                )
             time.sleep(2**attempt)
             continue
-        raise TranslateError("openrouter_failed", f"OpenRouter HTTP {r.status_code}")
+        detail = _error_detail(r)
+        raise TranslateError(
+            "openrouter_failed",
+            f"OpenRouter HTTP {r.status_code}: {detail}{_data_policy_hint(model, detail)}",
+        )
 
     raise TranslateError("openrouter_failed", last or "gagal tanpa alasan")
 
