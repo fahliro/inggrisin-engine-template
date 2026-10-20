@@ -299,6 +299,44 @@ def test_chat_body_bukan_json_tetap_aman(monkeypatch):
     assert "Bad Request" in e.value.message
 
 
+def test_chat_matikan_reasoning_dan_json_mode(monkeypatch):
+    captured = {}
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured.update(json)
+        return R()
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    translate._chat(LOG, "k", "minimax/minimax-m3.1-flash:free", "s", "u", True, "t")
+    assert captured["reasoning"] == {"enabled": False}
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["max_tokens"] == 8000
+
+
+def test_chat_finish_reason_length_diwarnakan(monkeypatch, capsys):
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "{}"}, "finish_reason": "length"}],
+                "usage": {},
+            }
+
+    monkeypatch.setattr(translate.requests, "post", lambda *a, **k: R())
+    translate._chat(LOG, "k", "m", "s", "u", True, "t")
+    assert "finish_reason=length" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # config.py — mode & konstanta terkunci
 # ---------------------------------------------------------------------------

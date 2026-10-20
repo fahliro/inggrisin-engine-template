@@ -126,6 +126,7 @@ def translate(
         tokens["completion"] += usage["completion_tokens"]
         data = _extract_json(log, content)
         if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+            log.warn("jawaban LLM tak sesuai skema — coba repair", raw=repr(content[:600]))
             # satu kali repair attempt untuk JSON rusak
             content, usage = _chat(
                 log,
@@ -140,6 +141,7 @@ def translate(
             tokens["completion"] += usage["completion_tokens"]
             data = _extract_json(log, content)
         if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+            log.warn("repair JSON juga gagal — job dihentikan", raw=repr(content[:600]))
             raise TranslateError(
                 "llm_bad_json", "LLM tidak mengembalikan JSON sesuai skema (2 percobaan)"
             )
@@ -316,7 +318,12 @@ def _chat(
             {"role": "user", "content": user},
         ],
         "temperature": 0.2,
-        "max_tokens": 4000,
+        "max_tokens": 8000,
+        # Model reasoning (mis. minimax-m3.1) bisa menghabiskan max_tokens untuk
+        # token reasoning sehingga `content` kosong/terpotong → llm_bad_json.
+        # Matikan; model tanpa dukungan reasoning mengabaikan parameter ini
+        # (OpenRouter men-drop param yang tak didukung provider).
+        "reasoning": {"enabled": False},
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
@@ -345,7 +352,11 @@ def _chat(
 
         if r.status_code == 200:
             j = r.json()
-            content = ((j.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            choice = (j.get("choices") or [{}])[0]
+            content = (choice.get("message") or {}).get("content") or ""
+            finish = choice.get("finish_reason")
+            if finish not in (None, "stop"):
+                log.warn(f"LLM finish_reason={finish} — jawaban mungkin terpotong", tag=tag)
             usage = j.get("usage") or {}
             return str(content), {
                 "prompt_tokens": int(usage.get("prompt_tokens") or 0),
