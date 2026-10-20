@@ -72,7 +72,7 @@ on:
       llm_model:
         required: false
         type: string
-        default: 'openai/gpt-4o-mini'
+        default: 'nvidia/nemotron-3-super-120b-a12b:free'
       voice:
         required: false
         type: string

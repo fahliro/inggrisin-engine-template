@@ -151,7 +151,7 @@ class Config:
             callback_url=req("INGGRISIN_CALLBACK_URL"),
             callback_secret=req("INGGRISIN_CALLBACK_SECRET"),
             whisper_model=opt("INGGRISIN_WHISPER_MODEL", "whisper-large-v3-turbo"),
-            llm_model=opt("INGGRISIN_LLM_MODEL", "openai/gpt-4o-mini"),
+            llm_model=opt("INGGRISIN_LLM_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"),
             voice=voice,
             drive_folder_id=req("INGGRISIN_DRIVE_FOLDER_ID"),
             dubbed_file_name=req("INGGRISIN_DUBBED_FILE_NAME"),
