@@ -265,7 +265,7 @@ def test_chat_404_data_policy_menyertakan_body_dan_petunjuk(monkeypatch):
     resp = _HttpResp(404, {"error": {"message": "No endpoints found matching your data policy"}})
     monkeypatch.setattr(translate.requests, "post", lambda *a, **k: resp)
     with pytest.raises(translate.TranslateError) as e:
-        translate._chat(LOG, "k", "nvidia/nemotron-3-super-120b-a12b:free", "s", "u", False, "t")
+        translate._chat(LOG, "k", "minimax/minimax-m3.1-flash:free", "s", "u", False, "t")
     assert e.value.code == "openrouter_failed"
     assert "No endpoints found matching your data policy" in e.value.message
     assert "openrouter.ai/settings/privacy" in e.value.message

@@ -72,7 +72,7 @@ on:
       llm_model:
         required: false
         type: string
-        default: 'nvidia/nemotron-3-super-120b-a12b:free'
+        default: 'minimax/minimax-m3.1-flash:free'
       voice:
         required: false
         type: string
