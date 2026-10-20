@@ -1,0 +1,8 @@
+# Runtime engine — di-install di runner GitHub Actions (ubuntu-latest, Python 3.11).
+# JANGAN tambah dependensi berat tanpa alasan: setiap MB memperlama cold start
+# dan memakan kuota menit user.
+
+piper-tts==1.2.0        # TTS inti (menarik piper-phonemize + onnxruntime)
+onnxruntime==1.19.2      # pin: versi baru kadang butuh glibc lebih tinggi
+requests==2.32.3         # HTTP ke Groq / OpenRouter / Drive
+python-dateutil==2.9.0.post0

@@ -1,0 +1,335 @@
+name: inggrisin
+
+# ============================================================================
+#  inggrisin compute engine
+#  ---------------------------------------------------------------------------
+#  Workflow ini berjalan di akun GITHUB USER, memakai kuota Actions user,
+#  GROQ_API_KEY milik user, dan OPENROUTER_API_KEY milik user.
+#
+#  Keamanan (baca sebelum mengubah apa pun di file ini):
+#   1. SEMUA secret di-mask dengan `add-mask` di step pertama.
+#   2. JANGAN pernah `echo` secret, JANGAN pakai `set -x`.
+#   3. Source diunduh lewat proxy sekali-pakai milik app — access token Google
+#      TIDAK PERNAH masuk ke runner ini.
+#   4. Payload callback ditandatangani HMAC; secret-nya di-pass lewat
+#      `env:` step, bukan `inputs`, dan langsung di-mask.
+#   5. `permissions:` dipersempit ke contents:read — workflow ini tidak
+#      butuh menulis apa pun ke repo.
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      contract_version:
+        description: 'Versi kontrak app<->engine'
+        required: true
+        type: string
+      job_id:
+        description: 'ID job inggrisin'
+        required: true
+        type: string
+      idempotency_key:
+        description: 'Kunci idempotensi'
+        required: true
+        type: string
+      source_url:
+        description: 'URL proxy download sekali-pakai'
+        required: true
+        type: string
+      source_name:
+        description: 'Nama file sumber'
+        required: true
+        type: string
+      source_bytes:
+        description: 'Ukuran file sumber (byte)'
+        required: true
+        type: string
+      source_sha256:
+        description: 'Opsional: sha256 file sumber'
+        required: false
+        type: string
+        default: ''
+      callback_url:
+        description: 'URL callback hasil'
+        required: true
+        type: string
+      callback_secret:
+        description: 'HMAC secret sekali-pakai (DI-MASK, jangan di-log)'
+        required: true
+        type: string
+      groq_secret_name:
+        required: false
+        type: string
+        default: 'GROQ_API_KEY'
+      openrouter_secret_name:
+        required: false
+        type: string
+        default: 'OPENROUTER_API_KEY'
+      whisper_model:
+        required: false
+        type: string
+        default: 'whisper-large-v3-turbo'
+      llm_model:
+        required: false
+        type: string
+        default: 'openai/gpt-4o-mini'
+      voice:
+        required: false
+        type: string
+        default: 'en_US-lessac-medium'
+      mode:
+        description: 'first = pipeline penuh | revision = SRT pass-through (TANPA Groq/LLM)'
+        required: false
+        type: string
+        default: 'first'
+      revision_number:
+        description: 'Mode revision: nomor revisi (1, 2, ...)'
+        required: false
+        type: string
+        default: '0'
+      revisions_url:
+        description: 'Mode revision: URL app tempat mengambil SRT+manifest (bertoken, TTL pendek)'
+        required: false
+        type: string
+        default: ''
+      dubbed_file_name:
+        description: 'Nama file hasil, konvensi "<nama sumber> (EN).mp4"'
+        required: false
+        type: string
+        default: ''
+      result_drive_file_id:
+        description: 'Mode revision: file Drive hasil lama yang DITIMPA (bukan tambah baru)'
+        required: false
+        type: string
+        default: ''
+      drive_folder_id:
+        description: 'Folder Drive PER-VIDEO (dibuat app sebelum dispatch) — wajib'
+        required: false
+        type: string
+        default: ''
+      result_upload_url:
+        required: false
+        type: string
+        default: ''
+      options:
+        description: 'JSON konstanta kontrak TERKUNCI (fit_mode=blur, timing=strict, tempo_max=1.25, subtitles=burn, music=false) — engine menolak nilai lain'
+        required: false
+        type: string
+        default: '{}'
+
+  # memungkinkan dipanggil sebagai reusable workflow dari repo lain
+  workflow_call:
+    secrets:
+      GROQ_API_KEY:
+        # tidak wajib: mode revision tidak memanggil Groq sama sekali
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
+      INGGRISIN_CALLBACK_SECRET:
+        required: true
+
+# batalkan run lama untuk job yang sama kalau user men-dispatch ulang
+concurrency:
+  group: inggrisin-${{ inputs.job_id || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  # Piper men-download model voice ke sini; di-cache antar run
+  PIPERS_VOICE_DIR: ${{ github.workspace }}/.voices
+  INGGRISIN_ENGINE_VERSION: '2026-10-15.1'
+
+jobs:
+  process:
+    name: Dubbing (first | revision)
+    runs-on: ubuntu-latest
+    # 300 menit, BUKAN 45.
+    #
+    # Keputusan produk: video panjang TIDAK dipotong dan TIDAK ditolak
+    # (docs/01-DECISIONS.md §15). Artinya satu video 48 menit harus
+    # bisa selesai dalam satu run. Perkiraan re-encode vertikal 1080x1920 di
+    # runner 4 vCPU:
+    #   · sumber sudah 9:16 (tanpa re-encode)  →  2-5 menit
+    #   · sumber 16:9, 5 menit                 →  9-15 menit
+    #   · sumber 16:9, 48 menit                →  40-145 menit
+    # Batas 45 menit akan MEMBUNUH kasus ketiga di tengah jalan — setelah
+    # transkrip & terjemahan selesai, jadi seluruh biayanya hangus.
+    #
+    # GitHub membatasi satu job maksimal 6 jam; 300 menit menyisakan margin.
+    # Konsekuensi yang harus diterima: satu video panjang bisa memakan
+    # 3-7% jatah bulanan 2.000 menit. UI WAJIB menampilkan estimasi yang
+    # jujur SEBELUM user menekan mulai (lihat layar "Konfirmasi & mulai").
+    timeout-minutes: 300
+    # jangan jalan kalau secret wajib belum disetel
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call' }}
+
+    steps:
+      # ------------------------------------------------------------------
+      # 0. checkout
+      # ------------------------------------------------------------------
+      - name: Checkout engine
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 1. MASK SEMUA SECRET — step pertama, sebelum apa pun yang lain
+      #    Kalau ada secret baru, tambahkan di sini JUGA.
+      # ------------------------------------------------------------------
+      - name: Mask secrets
+        env:
+          S1: ${{ secrets.GROQ_API_KEY }}
+          S2: ${{ secrets.OPENROUTER_API_KEY }}
+          S3: ${{ inputs.callback_secret }}
+          S4: ${{ inputs.source_url }}
+          S5: ${{ inputs.callback_url }}
+        run: |
+          for v in "$S1" "$S2" "$S3" "$S4" "$S5"; do
+            if [ -n "$v" ]; then echo "::add-mask::$v"; fi
+          done
+          # juga mask bagian token dari URL proxy (query string)
+          if [ -n "$S4" ]; then
+            tok="${S4##*/}"; tok="${tok%%\?*}"
+            [ -n "$tok" ] && echo "::add-mask::$tok"
+          fi
+          unset S1 S2 S3 S4 S5
+          echo "masking selesai"
+
+      - name: Fail fast — validasi input & secret
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
+          SOURCE_URL: ${{ inputs.source_url }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ inputs.callback_secret }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ -n "$JOB_ID" ]          || fail "job_id kosong"
+          [ -n "$SOURCE_URL" ]      || fail "source_url kosong"
+          [ -n "$CALLBACK_URL" ]    || fail "callback_url kosong"
+          [ -n "$CALLBACK_SECRET" ] || fail "callback_secret kosong"
+          [ -n "$GROQ_API_KEY" ]    || fail "Secret GROQ_API_KEY belum disetel di repo ini. Buka dashboard inggrisin → Settings → simpan Groq key, lalu jalankan ulang setup engine."
+          echo "input OK (job_id=$JOB_ID)"
+
+      # ------------------------------------------------------------------
+      # 2. runtime
+      # ------------------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          # PIN versi. `ubuntu-latest` bisa naik versi Python dan memecah
+          # wheel piper-phonemize. Jangan ganti tanpa menjalankan selfcheck.
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-py311-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-py311-${{ runner.os }}-
+
+      - name: Cache Piper voice models
+        uses: actions/cache@v4
+        with:
+          path: .voices
+          key: piper-voice-${{ inputs.voice }}
+          restore-keys: piper-voice-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # piper-tts menarik piper-phonemize; kalau gagal, fallback binary (lihat tts.py)
+          pip install -r requirements.txt || {
+            echo "::warning::pip install penuh gagal — mencoba tanpa piper-tts (fallback binary)"
+            grep -v -i '^piper' requirements.txt > requirements.nopiper.txt
+            pip install -r requirements.nopiper.txt
+            echo "PIPER_FALLBACK=binary" >> "$GITHUB_ENV"
+          }
+
+      - name: Verify ffmpeg
+        run: |
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      # ------------------------------------------------------------------
+      # 3. pipeline
+      #    Semua langkah ada di satu proses Python supaya state (path file,
+      #    timing, partial result) tidak perlu dilempar antar step shell.
+      #    Progress dikirim ke app sebagai heartbeat.
+      # ------------------------------------------------------------------
+      - name: Run engine
+        id: engine
+        env:
+          INGGRISIN_JOB_ID: ${{ inputs.job_id }}
+          INGGRISIN_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
+          INGGRISIN_CONTRACT_VERSION: ${{ inputs.contract_version }}
+          INGGRISIN_SOURCE_URL: ${{ inputs.source_url }}
+          INGGRISIN_SOURCE_NAME: ${{ inputs.source_name }}
+          INGGRISIN_SOURCE_BYTES: ${{ inputs.source_bytes }}
+          INGGRISIN_SOURCE_SHA256: ${{ inputs.source_sha256 }}
+          INGGRISIN_CALLBACK_URL: ${{ inputs.callback_url }}
+          INGGRISIN_CALLBACK_SECRET: ${{ inputs.callback_secret }}
+          INGGRISIN_OPTIONS: ${{ inputs.options }}
+          INGGRISIN_WHISPER_MODEL: ${{ inputs.whisper_model }}
+          INGGRISIN_LLM_MODEL: ${{ inputs.llm_model }}
+          INGGRISIN_VOICE: ${{ inputs.voice }}
+          INGGRISIN_MODE: ${{ inputs.mode }}
+          INGGRISIN_REVISION_NUMBER: ${{ inputs.revision_number }}
+          INGGRISIN_REVISIONS_URL: ${{ inputs.revisions_url }}
+          INGGRISIN_DUBBED_FILE_NAME: ${{ inputs.dubbed_file_name }}
+          INGGRISIN_RESULT_DRIVE_FILE_ID: ${{ inputs.result_drive_file_id }}
+          INGGRISIN_DRIVE_FOLDER_ID: ${{ inputs.drive_folder_id }}
+          INGGRISIN_RESULT_UPLOAD_URL: ${{ inputs.result_upload_url }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_RUN_ID_OUT: ${{ github.run_id }}
+          GITHUB_RUN_URL_OUT: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python -m engine.main \
+            --workspace "${{ runner.temp }}/inggrisin" \
+            --out "${{ runner.temp }}/inggrisin/out" \
+            --report "${{ runner.temp }}/report.json"
+
+      # ------------------------------------------------------------------
+      # 4. kirim hasil (callback) — dilakukan engine sendiri supaya partial
+      #    failure tetap dilaporkan. Step ini hanya jaring pengaman.
+      # ------------------------------------------------------------------
+      - name: Ensure callback delivered
+        if: ${{ always() }}
+        env:
+          INGGRISIN_JOB_ID: ${{ inputs.job_id }}
+          INGGRISIN_CALLBACK_URL: ${{ inputs.callback_url }}
+          INGGRISIN_CALLBACK_SECRET: ${{ inputs.callback_secret }}
+          INGGRISIN_CONTRACT_VERSION: ${{ inputs.contract_version }}
+          GITHUB_RUN_ID_OUT: ${{ github.run_id }}
+          GITHUB_RUN_URL_OUT: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python -m engine.callback_guard \
+            --report "${{ runner.temp }}/report.json" \
+            --conclusion "${{ job.status }}"
+
+      # ------------------------------------------------------------------
+      # 5. artifact untuk debugging (retention pendek, hemat kuota storage)
+      #    TIDAK berisi audio final (itu ke Drive) dan TIDAK berisi secret.
+      # ------------------------------------------------------------------
+      - name: Upload debug artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: inggrisin-${{ inputs.job_id }}-logs
+          path: |
+            ${{ runner.temp }}/report.json
+            ${{ runner.temp }}/inggrisin/engine.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+      # ------------------------------------------------------------------
+      # 6. bersihkan file media dari runner (kuota 10 GB, tapi tetap)
+      # ------------------------------------------------------------------
+      - name: Cleanup
+        if: ${{ always() }}
+        run: |
+          rm -rf "${{ runner.temp }}/inggrisin" || true
+          echo "workspace dibersihkan"

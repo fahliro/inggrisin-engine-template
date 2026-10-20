@@ -1,0 +1,15 @@
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = [
+  "S311",  # random bukan untuk kriptografi di sini
+  "E501",  # biar formatter yang mengurus panjang baris
+  "S603",  # subprocess SELALU bentuk list tanpa shell; argv dibangun dari konstanta internal (ffmpeg/ffprobe/piper), bukan input user
+  "S607",  # biner dicari dari PATH runner ubuntu-latest yang dikelola GitHub (ffmpeg/ffprobe)
+  "S310",  # urlopen hanya untuk model suara & binary Piper dari URL konstanta (HuggingFace/GitHub releases)
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101", "S108"]

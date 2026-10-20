@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# model voice di-download saat runtime, jangan di-commit (puluhan MB)
+.voices/
+voices/*.onnx
+voices/*.onnx.json
+
+# artefak lokal
+out/
+*.mp3
+*.wav
+*.opus
+*.log
