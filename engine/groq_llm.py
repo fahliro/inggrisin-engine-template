@@ -42,7 +42,7 @@ def _backoff(log: Logger, attempt: int, reason: str) -> None:
     time.sleep(min(wait, 30.0))
 
 
-_SYSTEM = "\n".join(
+_SYSTEM_EN = "\n".join(
     [
         "You are a subtitle translator for dubbed videos (Indonesian → English).",
         "RULES:",
@@ -53,15 +53,29 @@ _SYSTEM = "\n".join(
     ]
 )
 
+_SYSTEM_ID = "\n".join(
+    [
+        "You are a subtitle translator for dubbed videos (English → Indonesian).",
+        "RULES:",
+        "- Output ONLY Indonesian, gaya lisan natural.",
+        "- Translate EVERY segment 1:1. Keep the given idx. Never split or merge.",
+        '- Return STRICT JSON only: {"segments":[{"idx":<int>,"text_id":"<string>"}]}.',
+    ]
+)
+
 
 def translate_segments(
     log: Logger,
     api_key: str,
     items: list[tuple[int, str, int]],
     model: str = MODEL,
+    target: str = "en",
 ) -> dict[int, str]:
     """Terjemahkan [(idx, text_id, budget_chars)] → {idx: text_en} via Groq chat.
 
+    target="en": Indonesia→Inggris (fallback bila translate Whisper halusinasi).
+    target="id": Inggris→Indonesia (back-translate untuk teks referensi bila
+    segmentasi kanonik diambil dari pass translations — §32 v2).
     Satu panggilan chat completion wajib-JSON; retry + exponential backoff untuk
     429/5xx/network; 400 param ditolak → relaksasi (reasoning_effort lalu
     response_format). Semua idx WAJIB hadir di jawaban, selain itu GroqLlmError.
@@ -72,15 +86,25 @@ def translate_segments(
             "llm_payload_too_large",
             f"teks sumber {total} char melebihi batas fallback LLM {MAX_CHARS_PER_CALL}",
         )
-    user = (
-        "Translate these segments to English. Each line: idx, budget, Indonesian text.\n"
-        + "\n".join(f'- idx={idx} budget={budget} id="{text}"' for idx, text, budget in items)
-    )
+    if target == "id":
+        user = (
+            "Translate these segments to Indonesian. Each line: idx, English text.\n"
+            + "\n".join(f'- idx={idx} en="{text}"' for idx, text, _ in items)
+        )
+        system = _SYSTEM_ID
+        out_field = "text_id"
+    else:
+        user = (
+            "Translate these segments to English. Each line: idx, budget, Indonesian text.\n"
+            + "\n".join(f'- idx={idx} budget={budget} id="{text}"' for idx, text, budget in items)
+        )
+        system = _SYSTEM_EN
+        out_field = "text_en"
 
     body: dict[str, Any] = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": 0.3,
@@ -110,7 +134,7 @@ def translate_segments(
 
         if r.status_code == 200:
             content = _content_of(r)
-            out = _parse_segments(content)
+            out = _parse_segments(content, out_field)
             if out is None:
                 last = "jawaban bukan JSON sesuai skema"
                 if attempt == MAX_RETRIES:
@@ -152,7 +176,7 @@ def _content_of(r: requests.Response) -> str:
         return ""
 
 
-def _parse_segments(content: str) -> dict[int, str] | None:
+def _parse_segments(content: str, out_field: str = "text_en") -> dict[int, str] | None:
     cleaned = (content or "").replace("```json", "").replace("```", "").strip()
     try:
         j = json.loads(cleaned)
@@ -167,7 +191,7 @@ def _parse_segments(content: str) -> dict[int, str] | None:
     out: dict[int, str] = {}
     for seg in (j or {}).get("segments") or []:
         idx = seg.get("idx")
-        text = seg.get("text_en")
+        text = seg.get(out_field)
         if isinstance(idx, int) and isinstance(text, str):
             out[idx] = " ".join(text.split())
     return out or None

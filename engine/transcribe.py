@@ -56,6 +56,9 @@ class Segment:
     end: float
     text: str
     words: list[Word] = field(default_factory=list)
+    # metrik keyakinan Whisper (verbose_json OpenAI-style; mungkin absen di provider)
+    no_speech_prob: float | None = None
+    avg_logprob: float | None = None
 
 
 @dataclass(slots=True)
@@ -106,11 +109,10 @@ def transcribe_file(
                     "response_format": "verbose_json",
                     "temperature": temperature,
                 }
-                if task != "translate":
-                    # HANYA endpoint transcriptions yang menerima param ini;
-                    # /audio/translations menjawab 400 "unknown param".
-                    # Default granularity translations tetap `segment`.
-                    data["timestamp_granularities[]"] = "segment"
+                # CATATAN (§32 v2): JANGAN kirim timestamp_granularities[] —
+                # verbose_json sudah mengembalikan segments, dan param ini
+                # dicurigai memicu transkrip degenerat pada audio tertentu
+                # (translate tanpa param ini sehat pada audio yang sama).
                 if language and task != "translate":
                     data["language"] = language
                 if prompt:
@@ -190,12 +192,16 @@ def _parse(
             )
             for w in (s.get("words") or [])
         ]
+        nsp = s.get("no_speech_prob")
+        alp = s.get("avg_logprob")
         segments.append(
             Segment(
                 start=float(s.get("start", 0.0)),
                 end=float(s.get("end", 0.0)),
                 text=str(s.get("text", "")).strip(),
                 words=words,
+                no_speech_prob=float(nsp) if isinstance(nsp, (int, float)) else None,
+                avg_logprob=float(alp) if isinstance(alp, (int, float)) else None,
             )
         )
 
@@ -386,3 +392,16 @@ def source_degenerate(
     if en_chars < min_en_chars:
         return False
     return id_chars < ratio * en_chars
+
+
+def speech_confidence(tr: Transcript) -> float | None:
+    """Rata-rata no_speech_prob segmen (0=yakin ucapan, 1=yakin bukan ucapan).
+
+    None bila provider tidak mengirim metriknya. Pelengkap source_degenerate:
+    halusinasi Whisper atas BGM/keheningan biasanya ber-no_speech_prob tinggi,
+    sementara ucapan riil rendah (kasus nyata §32: riil ≈ 0.24).
+    """
+    vals = [s.no_speech_prob for s in tr.segments if s.no_speech_prob is not None]
+    if not vals:
+        return None
+    return sum(vals) / len(vals)

@@ -358,19 +358,18 @@ def run_first(
     )
     id_segs = [s for s in tr.segments if (s.text or "").strip()]
     texts_en = transcribe.align_translation(id_segs, tren.segments)
+    id_text_override: list[str] | None = None
 
-    # Guard bahasa (docs/01 §32): bila pass sumber degenerat dibanding pass
-    # translate (audio ternyata BUKAN bahasa sumber yang dipaksa — Whisper
-    # wajib-language menghasilkan transkrip halusinasi pendek), ulang transcribe
-    # dengan deteksi otomatis SEBELUM chunk dibersihkan, supaya timing kanonik
-    # dan segmentasi sehat lagi.
+    # Guard silang-pass (docs/01 §32 v2): bila pass sumber degenerat dibanding
+    # pass translate, JANGAN langsung membuang salah satu — coba varian
+    # transcribe (auto-detect), lalu putuskan lewat keyakinan ucapan
+    # (no_speech_prob) milik pass translate.
     if transcribe.source_degenerate(tr, tren):
         _id_chars = sum(len((s.text or "").strip()) for s in tr.segments)
         _en_chars = sum(len((s.text or "").strip()) for s in tren.segments)
         log.warn(
             f"transkrip sumber degenerat: {_id_chars} char vs {_en_chars} char Inggris — "
-            "audio kemungkinan bukan bahasa sumber wajib ('id'); "
-            "ulang transcribe dengan deteksi bahasa otomatis"
+            "coba varian transcribe auto-detect sebelum mempercayai pass lain"
         )
         if chunks:
             tr_auto = transcribe.transcribe_chunks(
@@ -399,13 +398,38 @@ def run_first(
             id_segs = [s for s in tr.segments if (s.text or "").strip()]
             texts_en = transcribe.align_translation(id_segs, tren.segments)
         else:
-            # Sumber konsisten (forced-id == auto-detect) sementara translate
-            # jauh lebih panjang → translate Whisper dicurigai BERHALUSINASI
-            # (pola khas BGM/keheningan). Jangan publikasikan halusinasi:
-            # terjemahkan teks sumber via LLM Groq (docs/01 §32).
+            # Transcribe degenerat di semua varian sementara translate sehat.
+            # Keyakinan ucapan translate yang memutuskan: ucapan riil →
+            # translate dijadikan KANONIK (timing + text_en), text_id =
+            # back-translate en→id via LLM (referensi). Tanpa ucapan → gagal
+            # jelas (§22, tanpa hasil parsial).
+            conf = transcribe.speech_confidence(tren)
+            conf_ok = (conf is not None and conf < 0.5) or (
+                conf is None and len(tren.segments) >= 2
+            )
+            log.warn(f"transcribe degenerat di semua varian; keyakinan ucapan translate={conf}")
+            if not conf_ok:
+                raise RuntimeError(
+                    "Transkrip dan terjemahan Whisper sama-sama tidak meyakinkan — "
+                    "audio kemungkinan hanya musik/keheningan tanpa ucapan"
+                )
+            en_segs = [s for s in tren.segments if (s.text or "").strip()]
+            items_bt = [(i, s.text, srt.budget_of(s.start, s.end)) for i, s in enumerate(en_segs)]
+            bt = groq_llm.translate_segments(log, cfg.groq_api_key, items_bt, target="id")
             log.warn(
-                "transkrip auto-detect juga degenerat — translate Whisper dicurigai "
-                "halusinasi; terjemahan teks sumber via LLM Groq gpt-oss-20b"
+                f"pass translations dijadikan kanonik ({len(en_segs)} segmen); "
+                "text_id = back-translate en→id via LLM (referensi)"
+            )
+            id_segs = en_segs
+            texts_en = [s.text for s in en_segs]
+            id_text_override = [bt.get(i, "") for i in range(len(en_segs))]
+    else:
+        # Sumber sehat: pastikan translate tidak halusinasi di atasnya
+        conf = transcribe.speech_confidence(tren)
+        if conf is not None and conf >= 0.5:
+            log.warn(
+                f"translate Whisper dicurigai halusinasi (no_speech_prob={conf:.2f}) — "
+                "terjemahan teks sumber via LLM Groq gpt-oss-20b"
             )
             items = [(i, s.text, srt.budget_of(s.start, s.end)) for i, s in enumerate(id_segs)]
             llm_en = groq_llm.translate_segments(log, cfg.groq_api_key, items)
@@ -426,7 +450,13 @@ def run_first(
 
     # baris subtitle: pecah yang terlalu panjang demi keterbacaan (docs/01 §32)
     rows = [
-        {"idx": i, "start": s.start, "end": s.end, "text_id": s.text, "text_en": texts_en[i]}
+        {
+            "idx": i,
+            "start": s.start,
+            "end": s.end,
+            "text_id": id_text_override[i] if id_text_override else s.text,
+            "text_en": texts_en[i],
+        }
         for i, s in enumerate(id_segs)
     ]
     n_rows = len(rows)

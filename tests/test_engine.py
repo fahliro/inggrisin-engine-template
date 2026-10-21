@@ -1011,7 +1011,9 @@ def test_groq_llm_retry_429_lalu_sukses(monkeypatch):
         status_code = 200
 
         def json(self):
-            return {"choices": [{"message": {"content": '{"segments":[{"idx":1,"text_en":"Hi."}]}'}}]}
+            return {
+                "choices": [{"message": {"content": '{"segments":[{"idx":1,"text_en":"Hi."}]}'}}]
+            }
 
     def fake_post(url, **kw):
         calls["n"] += 1
@@ -1037,3 +1039,37 @@ def test_groq_llm_idx_hilang_gagal(monkeypatch):
     monkeypatch.setattr(groq_llm.time, "sleep", lambda s: None)
     with pytest.raises(groq_llm.GroqLlmError):
         groq_llm.translate_segments(LOG, "k", [(0, "a", 10), (1, "b", 10)])
+
+
+def test_speech_confidence_rata_rata_dan_none():
+    tr = _tr([(0.0, 5.0, "a"), (5.0, 10.0, "b")])
+    tr.segments[0].no_speech_prob = 0.2
+    tr.segments[1].no_speech_prob = 0.4
+    assert transcribe_mod.speech_confidence(tr) == pytest.approx(0.3)
+    assert transcribe_mod.speech_confidence(_tr([(0.0, 2.0, "x")])) is None
+
+
+def test_groq_llm_target_id_back_translate(monkeypatch):
+    from engine import groq_llm
+
+    seen = {}
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": '{"segments":[{"idx":0,"text_id":"Terima kasih."}]}'}}
+                ]
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen["body"] = json
+        return R()
+
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    out = groq_llm.translate_segments(LOG, "k", [(0, "Thank you.", 50)], target="id")
+    assert out == {0: "Terima kasih."}
+    assert "English → Indonesian" in seen["body"]["messages"][0]["content"]
+    assert 'idx=0 en="Thank you."' in seen["body"]["messages"][1]["content"]
