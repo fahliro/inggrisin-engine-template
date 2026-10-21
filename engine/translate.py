@@ -1,6 +1,11 @@
 """
 translate.py — terjemahan dubbing id→en lewat OpenRouter (JSON strict).
 
+STATUS (docs/01 §29): TIDAK lagi dipakai pipeline utama — build pertama kini
+menerjemahkan langsung lewat Groq Whisper /audio/translations (lihat main.py).
+Modul ini DIPERTAHANKAN sebagai jalur terjemahan LLM bila kelak dibutuhkan
+(mis. kualitas persona khusus) dan tetap teruji penuh.
+
 Menggantikan polish.py (era konsep lama). Perbedaan prinsip:
   * Output 1:1 dengan segmen input — idx/start/end TIDAK boleh dipecah/digabung
     (manifest mengunci timing; docs/00 §6 aturan 1).
@@ -15,6 +20,7 @@ Menggantikan polish.py (era konsep lama). Perbedaan prinsip:
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -27,6 +33,17 @@ from .srt import CPS, TEMPO_MAX, budget_of, normalize_text
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_RETRIES = 3
+# percobaan tingkat-batch bila jawaban bukan JSON sesuai skema (openrouter/free
+# memilih model ACAK per request — percobaan berikutnya sering mendarat di
+# model lain yang patuh skema). Di antaranya: exponential backoff + jitter.
+MAX_JSON_ATTEMPTS = 3
+
+
+def _backoff(log: Logger, attempt: int, reason: str, tag: str = "") -> None:
+    """Exponential backoff + jitter (pola sama dengan transcribe._backoff)."""
+    wait = min(2.0**attempt + random.uniform(0, 1.0), 30.0)
+    log.warn(f"{reason} — coba lagi ({attempt}) dalam {wait:.1f}s", tag=tag or None)
+    time.sleep(wait)
 
 
 class TranslateError(Exception):
@@ -121,10 +138,17 @@ def translate(
 
     for batch in _batch(segments, max_batch_chars):
         user = _render_batch(batch)
-        content, usage = _chat(log, api_key, model, SYSTEM_PROMPT, user, True, "translate")
-        tokens["prompt"] += usage["prompt_tokens"]
-        tokens["completion"] += usage["completion_tokens"]
-        data = _extract_json(log, content)
+        content = ""
+        data = None
+        for attempt in range(1, MAX_JSON_ATTEMPTS + 1):
+            content, usage = _chat(log, api_key, model, SYSTEM_PROMPT, user, True, "translate")
+            tokens["prompt"] += usage["prompt_tokens"]
+            tokens["completion"] += usage["completion_tokens"]
+            data = _extract_json(log, content)
+            if isinstance(data, dict) and isinstance(data.get("segments"), list):
+                break
+            if attempt < MAX_JSON_ATTEMPTS:
+                _backoff(log, attempt, "jawaban LLM bukan JSON sesuai skema", tag="translate")
         if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
             log.warn("jawaban LLM tak sesuai skema — coba repair", raw=repr(content[:600]))
             # satu kali repair attempt untuk JSON rusak
@@ -143,7 +167,8 @@ def translate(
         if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
             log.warn("repair JSON juga gagal — job dihentikan", raw=repr(content[:600]))
             raise TranslateError(
-                "llm_bad_json", "LLM tidak mengembalikan JSON sesuai skema (2 percobaan)"
+                "llm_bad_json",
+                f"LLM tidak mengembalikan JSON sesuai skema ({MAX_JSON_ATTEMPTS} percobaan + repair)",
             )
         got: set[int] = set()
         for item in data["segments"]:
@@ -348,7 +373,7 @@ def _chat(
             last = f"network {type(e).__name__}"
             if attempt == MAX_RETRIES:
                 raise TranslateError("openrouter_failed", last) from e
-            time.sleep(2**attempt)
+            _backoff(log, attempt, last, tag=tag)
             continue
 
         if r.status_code == 200:
@@ -381,8 +406,17 @@ def _chat(
                 f"OpenRouter HTTP {r.status_code} (key/kredit): {detail}"
                 f"{_data_policy_hint(model, detail)}",
             )
-        if r.status_code == 429 or 500 <= r.status_code < 600:
-            detail = _error_detail(r)
+        detail = _error_detail(r)
+        # 404 data-policy = PERMANEN (toggle privacy user OFF) — retry sia-sia
+        if r.status_code == 404 and "data policy" in detail.lower():
+            raise TranslateError(
+                "openrouter_failed",
+                f"OpenRouter HTTP 404: {detail}{_data_policy_hint(model, detail)}",
+            )
+        # transient: 429/5xx selalu; 404/408 lain (mis. "Provider returned
+        # error") sering sembuh sendiri — apalagi openrouter/free memilih
+        # model/endpoint acak per request, percobaan ulang bisa mendarat sehat.
+        if r.status_code == 429 or 500 <= r.status_code < 600 or r.status_code in (404, 408):
             last = f"HTTP {r.status_code}: {detail}"
             if attempt == MAX_RETRIES:
                 raise TranslateError(
@@ -390,9 +424,9 @@ def _chat(
                     f"OpenRouter {last} setelah {MAX_RETRIES} percobaan"
                     f"{_data_policy_hint(model, detail)}",
                 )
-            time.sleep(2**attempt)
+            _backoff(log, attempt, last, tag=tag)
             continue
-        detail = _error_detail(r)
+        # 4xx lain = permanen (400 bad request, dst.)
         raise TranslateError(
             "openrouter_failed",
             f"OpenRouter HTTP {r.status_code}: {detail}{_data_policy_hint(model, detail)}",

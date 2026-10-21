@@ -13,6 +13,7 @@ lalu digabung dengan OFFSET WAKU. Offset dihitung dari durasi chunk sebelumnya
 Retry: hanya untuk 429/5xx, dengan exponential backoff + jitter. 401/400
 tidak di-retry (buang waktu & kuota user).
 """
+
 from __future__ import annotations
 
 import random
@@ -26,6 +27,9 @@ from .audio import probe
 from .log import Logger
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+# Terjemahan LANGSUNG audio → Inggris (docs/01 §29). CATATAN: hanya didukung
+# `whisper-large-v3` (BUKAN -turbo — tabel dukungan Groq: Translation=No).
+GROQ_TRANSLATE_URL = "https://api.groq.com/openai/v1/audio/translations"
 MAX_RETRIES = 4
 # batas yang kita pakai sendiri (paling ketat) — lihat audio.TARGET_AUDIO_BYTES
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -72,8 +76,14 @@ def transcribe_file(
     language: str | None = "en",
     prompt: str | None = None,
     temperature: float = 0.0,
+    task: str = "transcribe",
 ) -> Transcript:
-    """Transkrip SATU file audio yang ukurannya sudah di bawah batas."""
+    """Proses SATU file audio (di bawah batas ukuran) via Groq Whisper.
+
+    task="transcribe" → /audio/transcriptions (teks bahasa sumber).
+    task="translate"  → /audio/translations (LANGSUNG ke Inggris; parameter
+    `language` diabaikan — endpoint translate hanya menerima 'en'/kosong).
+    """
     size = path.stat().st_size
     if size > MAX_UPLOAD_BYTES:
         raise TranscribeError(
@@ -97,45 +107,63 @@ def transcribe_file(
                     "timestamp_granularities[]": "segment",
                     "temperature": temperature,
                 }
-                if language:
+                if language and task != "translate":
                     data["language"] = language
                 if prompt:
                     # prompt memandu gaya & istilah; maks 244 token
                     data["prompt"] = prompt[:800]
 
                 r = requests.post(
-                    GROQ_URL,
-                    headers={"authorization": f"Bearer {api_key}", "user-agent": "inggrisin-engine"},
+                    GROQ_TRANSLATE_URL if task == "translate" else GROQ_URL,
+                    headers={
+                        "authorization": f"Bearer {api_key}",
+                        "user-agent": "inggrisin-engine",
+                    },
                     files=files,
                     data=data,
                     timeout=(30, 600),
                 )
         except requests.RequestException as e:
             if attempt == MAX_RETRIES:
-                raise TranscribeError("groq_failed", f"network error: {type(e).__name__}", True) from e
+                raise TranscribeError(
+                    "groq_failed", f"network error: {type(e).__name__}", True
+                ) from e
             _backoff(log, attempt, f"network {type(e).__name__}")
             continue
 
         if r.status_code == 200:
             elapsed = time.monotonic() - t0
-            return _parse(log, r, elapsed)
+            return _parse(
+                log, r, elapsed, label="terjemahan whisper" if task == "translate" else "transkrip"
+            )
 
         # --- pemetaan error yang bisa ditindaklanjuti ---
         if r.status_code in (401, 403):
-            raise TranscribeError("groq_auth", f"Groq menolak API key (HTTP {r.status_code}). Perbarui key di dashboard.")
+            raise TranscribeError(
+                "groq_auth",
+                f"Groq menolak API key (HTTP {r.status_code}). Perbarui key di dashboard.",
+            )
         if r.status_code == 413:
-            raise TranscribeError("groq_file_too_large", "Groq menolak: file terlalu besar (HTTP 413)")
+            raise TranscribeError(
+                "groq_file_too_large", "Groq menolak: file terlalu besar (HTTP 413)"
+            )
         if r.status_code == 422:
-            raise TranscribeError("groq_failed", f"Groq tidak bisa memproses audio (HTTP 422): {_safe_detail(r)}")
+            raise TranscribeError(
+                "groq_failed", f"Groq tidak bisa memproses audio (HTTP 422): {_safe_detail(r)}"
+            )
         if r.status_code == 429:
             # rate limit → retryable, tapi jangan buang banyak percobaan
             if attempt == MAX_RETRIES:
-                raise TranscribeError("groq_rate_limit", "Groq rate limit tercapai setelah beberapa percobaan", True)
+                raise TranscribeError(
+                    "groq_rate_limit", "Groq rate limit tercapai setelah beberapa percobaan", True
+                )
             _backoff(log, attempt, "429 rate limit", base=4.0)
             continue
         if 500 <= r.status_code < 600:
             if attempt == MAX_RETRIES:
-                raise TranscribeError("groq_failed", f"Groq error server (HTTP {r.status_code})", True)
+                raise TranscribeError(
+                    "groq_failed", f"Groq error server (HTTP {r.status_code})", True
+                )
             _backoff(log, attempt, f"{r.status_code} server error")
             continue
 
@@ -144,12 +172,18 @@ def transcribe_file(
     raise TranscribeError("groq_failed", "transkripsi gagal tanpa status jelas")
 
 
-def _parse(log: Logger, r: requests.Response, elapsed: float) -> Transcript:
+def _parse(
+    log: Logger, r: requests.Response, elapsed: float, label: str = "transkrip"
+) -> Transcript:
     j = r.json()
     segments: list[Segment] = []
     for s in j.get("segments") or []:
         words = [
-            Word(start=float(w.get("start", 0)), end=float(w.get("end", 0)), word=str(w.get("word", "")))
+            Word(
+                start=float(w.get("start", 0)),
+                end=float(w.get("end", 0)),
+                word=str(w.get("word", "")),
+            )
             for w in (s.get("words") or [])
         ]
         segments.append(
@@ -165,7 +199,7 @@ def _parse(log: Logger, r: requests.Response, elapsed: float) -> Transcript:
     duration = float(j.get("duration") or 0.0)
     lang = j.get("language")
     log.info(
-        f"transkrip: {len(text)} char, {len(segments)} segmen, {elapsed:.1f}s "
+        f"{label}: {len(text)} char, {len(segments)} segmen, {elapsed:.1f}s "
         f"(RTF {elapsed / max(duration, 0.001):.2f})",
         language=lang,
     )
@@ -187,6 +221,7 @@ def transcribe_chunks(
     language: str | None = "en",
     prompt: str | None = None,
     on_chunk: callable | None = None,
+    task: str = "transcribe",
 ) -> Transcript:
     """
     Transkrip banyak chunk lalu gabung dengan offset waktu yang benar.
@@ -209,7 +244,9 @@ def transcribe_chunks(
             log.warn(f"probe chunk {i} gagal: {e}")
 
         log.info(f"chunk {i}/{len(chunks)} ({dur:.0f}s, offset {offset:.0f}s)")
-        tr = transcribe_file(log, api_key, chunk, model=model, language=language, prompt=prompt)
+        tr = transcribe_file(
+            log, api_key, chunk, model=model, language=language, prompt=prompt, task=task
+        )
         if tr.language:
             lang = tr.language
 
@@ -219,7 +256,10 @@ def transcribe_chunks(
                     start=round(s.start + offset, 3),
                     end=round(s.end + offset, 3),
                     text=s.text,
-                    words=[Word(start=w.start + offset, end=w.end + offset, word=w.word) for w in s.words],
+                    words=[
+                        Word(start=w.start + offset, end=w.end + offset, word=w.word)
+                        for w in s.words
+                    ],
                 )
             )
         if tr.text:
@@ -266,3 +306,53 @@ def _safe_detail(r: requests.Response) -> str:
         return str(msg or j)[:300]
     except Exception:  # noqa: BLE001
         return (r.text or "")[:300]
+
+
+def align_translation(id_segments: list[Segment], en_segments: list[Segment]) -> list[str]:
+    """Petakan hasil translate Whisper (timing-nya SENDIRI) ke segmen transkrip asli.
+
+    docs/01 §29: timing kanonik = transkrip bahasa sumber (manifest); teks
+    Inggris datang dari pass translate yang segmentasinya bisa berbeda (Whisper
+    memecah/menggabung kalimat bebas). Algoritma deterministik:
+      1. tiap segmen Inggris masuk ke segmen asli dengan OVERLAP waktu terbesar
+         (satu segmen Inggris hanya masuk satu slot → tidak ada duplikasi;
+         beberapa segmen Inggris di slot yang sama digabung urut waktu),
+      2. slot asli yang masih kosong diisi teks segmen Inggris ber-pusat waktu
+         terdekat (jarang; dicatat pemanggil).
+    Return: list teks Inggris SEJAJAR indeks id_segments (mungkin "" bila
+    en_segments kosong).
+    """
+    out = [""] * len(id_segments)
+    if not id_segments or not en_segments:
+        return out
+
+    def _center(a: float, b: float) -> float:
+        return (a + b) / 2.0
+
+    for e in en_segments:
+        text = (e.text or "").strip()
+        if not text:
+            continue
+        best, best_ov = -1, 0.0
+        for i, s in enumerate(id_segments):
+            ov = min(e.end, s.end) - max(e.start, s.start)
+            if ov > best_ov:
+                best, best_ov = i, ov
+        if best < 0:
+            # tidak ada overlap sama sekali → pusat waktu terdekat
+            ce = _center(e.start, e.end)
+            best = min(
+                range(len(id_segments)),
+                key=lambda i: abs(_center(id_segments[i].start, id_segments[i].end) - ce),
+            )
+        out[best] = f"{out[best]} {text}".strip() if out[best] else text
+
+    for i, s in enumerate(id_segments):
+        if not out[i]:
+            cs = _center(s.start, s.end)
+            j = min(
+                range(len(en_segments)),
+                key=lambda k: abs(_center(en_segments[k].start, en_segments[k].end) - cs),
+            )
+            out[i] = (en_segments[j].text or "").strip()
+    return out

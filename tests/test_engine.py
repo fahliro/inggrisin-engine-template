@@ -6,6 +6,7 @@ logika orkestrasi dengan HTTP di-mock.
 Paritas dengan packages/shared: nilai budget & vektor SRT HARUS identik
 dengan contracts.test.ts (CPS=15, TEMPO_MAX=1.25, lantai 12).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -18,6 +19,7 @@ import pytest
 from engine import audio, callback, srt, translate, vertical
 from engine import config as config_mod
 from engine import main as main_mod
+from engine import transcribe as transcribe_mod
 from engine.log import Logger
 
 LOG = Logger(None)
@@ -26,6 +28,7 @@ LOG = Logger(None)
 # ---------------------------------------------------------------------------
 # srt.py — paritas dengan subtitles.ts
 # ---------------------------------------------------------------------------
+
 
 def test_parity_budget_dengan_ts():
     # vektor identik dengan contracts.test.ts
@@ -37,7 +40,9 @@ def test_parity_budget_dengan_ts():
 def test_srt_roundtrip():
     cues = [
         srt.Cue(0, 0.0, 6.0, "Hi everyone, welcome back to my kitchen."),
-        srt.Cue(1, 6.0, 15.0, "Today we're cooking authentic Padang rendang — a recipe passed down."),
+        srt.Cue(
+            1, 6.0, 15.0, "Today we're cooking authentic Padang rendang — a recipe passed down."
+        ),
         srt.Cue(2, 15.0, 22.0, "Just two main ingredients: beef and coconut milk. 🎉"),
     ]
     text = srt.serialize_srt(cues)
@@ -83,6 +88,7 @@ def test_validate_srt_size():
 # vertical.py — SATU pass, tidak pernah -c:v copy
 # ---------------------------------------------------------------------------
 
+
 def test_classify_aspect():
     assert vertical.classify_aspect(1920, 1080) == "horizontal"
     assert vertical.classify_aspect(1080, 1920) == "vertical"
@@ -112,8 +118,12 @@ def test_ass_time_format():
 
 def _render_cmd(aspect):
     return vertical.build_render_cmd(
-        Path("src.mp4"), Path("voice.wav"), Path("sub.ass"), Path("out.mp4"),
-        aspect, duration_s=100.0,
+        Path("src.mp4"),
+        Path("voice.wav"),
+        Path("sub.ass"),
+        Path("out.mp4"),
+        aspect,
+        duration_s=100.0,
     )
 
 
@@ -122,11 +132,11 @@ def test_render_horizontal_satu_pass_blur():
     joined = " ".join(cmd)
     fc = cmd[cmd.index("-filter_complex") + 1]
     assert "gblur" in fc and "overlay" in fc and "subtitles=" in fc
-    assert joined.count("libx264") == 1            # SATU encode video
-    assert "-c:v copy" not in joined               # tidak pernah copy
-    assert joined.count("subtitles=") == 1          # burn sekali, di pass yang sama
-    assert "-t" in cmd and "100.000" in cmd        # durasi dibatasi
-    assert "1:a:0" in joined                       # audio = voice track
+    assert joined.count("libx264") == 1  # SATU encode video
+    assert "-c:v copy" not in joined  # tidak pernah copy
+    assert joined.count("subtitles=") == 1  # burn sekali, di pass yang sama
+    assert "-t" in cmd and "100.000" in cmd  # durasi dibatasi
+    assert "1:a:0" in joined  # audio = voice track
 
 
 def test_render_vertical_tanpa_blur():
@@ -144,6 +154,7 @@ def test_escape_filter_path():
 # ---------------------------------------------------------------------------
 # audio.py — rencana voice track (fungsi murni)
 # ---------------------------------------------------------------------------
+
 
 def test_plan_voice_track_gap_dan_tail():
     plan = audio.plan_voice_track([(2.0, 3.0), (10.0, 2.0)], total_s=15.0)
@@ -163,6 +174,7 @@ def test_plan_voice_track_overlap_trim():
 # translate.py — LLM di-mock
 # ---------------------------------------------------------------------------
 
+
 def _segs():
     return [
         translate.InSegment(0, 0.0, 6.0, "Halo semuanya"),
@@ -181,13 +193,15 @@ def _fake_chat(responses):
 
 
 def test_translate_happy_path(monkeypatch):
-    resp = json.dumps({
-        "segments": [
-            {"idx": 0, "text_en": "Hi everyone"},
-            {"idx": 1, "text_en": "Today we cook rendang"},
-        ],
-        "terms": [{"from": "rendang", "to": "rendang"}],
-    })
+    resp = json.dumps(
+        {
+            "segments": [
+                {"idx": 0, "text_en": "Hi everyone"},
+                {"idx": 1, "text_en": "Today we cook rendang"},
+            ],
+            "terms": [{"from": "rendang", "to": "rendang"}],
+        }
+    )
     fake, calls = _fake_chat([resp])
     monkeypatch.setattr(translate, "_chat", fake)
     res = translate.translate(LOG, "k", _segs(), "m")
@@ -209,10 +223,14 @@ def test_translate_missing_idx_gagal(monkeypatch):
 
 def test_translate_over_budget_memicu_repair(monkeypatch):
     panjang = "word " * 60  # 300 karakter > budget slot 6 dtk (112)
-    resp1 = json.dumps({"segments": [
-        {"idx": 0, "text_en": panjang.strip()},
-        {"idx": 1, "text_en": "Today we cook rendang"},
-    ]})
+    resp1 = json.dumps(
+        {
+            "segments": [
+                {"idx": 0, "text_en": panjang.strip()},
+                {"idx": 1, "text_en": "Today we cook rendang"},
+            ]
+        }
+    )
     resp2 = json.dumps({"segments": [{"idx": 0, "text_en": "Hi everyone, welcome back"}]})
     fake, calls = _fake_chat([resp1, resp2])
     monkeypatch.setattr(translate, "_chat", fake)
@@ -224,7 +242,9 @@ def test_translate_over_budget_memicu_repair(monkeypatch):
 def test_translate_tempo_dihitung_deterministik(monkeypatch):
     # slot 6 dtk: natural ≤ 90 char; budget 112. 100 char → est 1.11 → fit tempo.
     teks = "x" * 100
-    resp1 = json.dumps({"segments": [{"idx": 0, "text_en": teks}, {"idx": 1, "text_en": "ok text"}]})
+    resp1 = json.dumps(
+        {"segments": [{"idx": 0, "text_en": teks}, {"idx": 1, "text_en": "ok text"}]}
+    )
     resp2 = json.dumps({"segments": [{"idx": 0, "text_en": teks}]})  # repair gagal merigkas
     fake, _ = _fake_chat([resp1, resp2])
     monkeypatch.setattr(translate, "_chat", fake)
@@ -246,6 +266,7 @@ def test_translate_lewat_budget_total_clip_125(monkeypatch):
 # ---------------------------------------------------------------------------
 # translate.py — _chat: cabang error HTTP OpenRouter (body + petunjuk)
 # ---------------------------------------------------------------------------
+
 
 class _HttpResp:
     """Response palsu minimal untuk menguji cabang error HTTP _chat."""
@@ -282,7 +303,9 @@ def test_chat_404_model_paid_tanpa_petunjuk_privasi(monkeypatch):
 
 
 def test_chat_402_menyertakan_body(monkeypatch):
-    resp = _HttpResp(402, {"error": {"message": "Insufficient credits — buy more at openrouter.ai"}})
+    resp = _HttpResp(
+        402, {"error": {"message": "Insufficient credits — buy more at openrouter.ai"}}
+    )
     monkeypatch.setattr(translate.requests, "post", lambda *a, **k: resp)
     with pytest.raises(translate.TranslateError) as e:
         translate._chat(LOG, "k", "openai/gpt-4o-mini", "s", "u", False, "t")
@@ -373,6 +396,7 @@ def test_chat_finish_reason_length_diwarnakan(monkeypatch, capsys):
 # config.py — mode & konstanta terkunci
 # ---------------------------------------------------------------------------
 
+
 def _env_base(monkeypatch, tmp_path, **over):
     base = {
         "INGGRISIN_JOB_ID": "job_12345678",
@@ -386,30 +410,38 @@ def _env_base(monkeypatch, tmp_path, **over):
     base.update({k: str(v) for k, v in over.items()})
     for k, v in base.items():
         monkeypatch.setenv(k, v)
-    for k in ("INGGRISIN_MODE", "INGGRISIN_REVISION_NUMBER", "INGGRISIN_REVISIONS_URL",
-              "INGGRISIN_RESULT_DRIVE_FILE_ID", "INGGRISIN_OPTIONS", "INGGRISIN_VOICE",
-              "GROQ_API_KEY", "OPENROUTER_API_KEY"):
+    for k in (
+        "INGGRISIN_MODE",
+        "INGGRISIN_REVISION_NUMBER",
+        "INGGRISIN_REVISIONS_URL",
+        "INGGRISIN_RESULT_DRIVE_FILE_ID",
+        "INGGRISIN_OPTIONS",
+        "INGGRISIN_VOICE",
+        "GROQ_API_KEY",
+        "OPENROUTER_API_KEY",
+    ):
         if k not in base:
             monkeypatch.delenv(k, raising=False)
     return tmp_path
 
 
-def test_config_first_butuh_groq_dan_openrouter(monkeypatch, tmp_path):
+def test_config_first_butuh_groq_saja(monkeypatch, tmp_path):
+    # §29: OpenRouter TIDAK lagi wajib di mode first (whisper translate langsung)
     _env_base(monkeypatch, tmp_path)
     with pytest.raises(config_mod.ConfigError):
         config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
     monkeypatch.setenv("GROQ_API_KEY", "gsk_x")
-    with pytest.raises(config_mod.ConfigError):
-        config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-x")
     cfg = config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
     assert cfg.mode == "first"
+    assert cfg.whisper_model == "whisper-large-v3"  # v3 penuh: dukung /audio/translations
 
 
 def test_config_revision_tanpa_groq_llm(monkeypatch, tmp_path):
     _env_base(
-        monkeypatch, tmp_path,
-        INGGRISIN_MODE="revision", INGGRISIN_REVISION_NUMBER="2",
+        monkeypatch,
+        tmp_path,
+        INGGRISIN_MODE="revision",
+        INGGRISIN_REVISION_NUMBER="2",
         INGGRISIN_REVISIONS_URL="https://app.example.com/rev?token=t",
         INGGRISIN_RESULT_DRIVE_FILE_ID="oldfile",
     )
@@ -425,8 +457,13 @@ def test_config_revision_butuh_field_revisi(monkeypatch, tmp_path):
 
 
 def test_config_options_terkunci(monkeypatch, tmp_path):
-    _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
-              INGGRISIN_OPTIONS=json.dumps({"fit_mode": "crop"}))
+    _env_base(
+        monkeypatch,
+        tmp_path,
+        GROQ_API_KEY="g",
+        OPENROUTER_API_KEY="o",
+        INGGRISIN_OPTIONS=json.dumps({"fit_mode": "crop"}),
+    )
     with pytest.raises(config_mod.ConfigError) as e:
         config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
     assert e.value.code == "contract_mismatch"
@@ -434,15 +471,25 @@ def test_config_options_terkunci(monkeypatch, tmp_path):
 
 def test_config_voice_katalog_diterima(monkeypatch, tmp_path):
     # docs/01 §27: suara = pilihan user dari katalog Piper (bukan kunci mati)
-    _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
-              INGGRISIN_VOICE="en_US-ryan-high")
+    _env_base(
+        monkeypatch,
+        tmp_path,
+        GROQ_API_KEY="g",
+        OPENROUTER_API_KEY="o",
+        INGGRISIN_VOICE="en_US-ryan-high",
+    )
     cfg = config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
     assert cfg.voice == "en_US-ryan-high"
 
 
 def test_config_voice_diluar_katalog_ditolak(monkeypatch, tmp_path):
-    _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
-              INGGRISIN_VOICE="id_ID-penipu-medium")
+    _env_base(
+        monkeypatch,
+        tmp_path,
+        GROQ_API_KEY="g",
+        OPENROUTER_API_KEY="o",
+        INGGRISIN_VOICE="id_ID-penipu-medium",
+    )
     with pytest.raises(config_mod.ConfigError) as e:
         config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
     assert "tidak dikenal" in e.value.message
@@ -452,8 +499,13 @@ def test_config_music_default_on_dan_bisa_dimatikan(monkeypatch, tmp_path):
     _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o")
     cfg = config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
     assert cfg.options["music"] is True
-    _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
-              INGGRISIN_OPTIONS='{"music": false}')
+    _env_base(
+        monkeypatch,
+        tmp_path,
+        GROQ_API_KEY="g",
+        OPENROUTER_API_KEY="o",
+        INGGRISIN_OPTIONS='{"music": false}',
+    )
     cfg2 = config_mod.Config.load(tmp_path / "w2", tmp_path / "o2", tmp_path / "r2.json")
     assert cfg2.options["music"] is False
 
@@ -462,9 +514,12 @@ def test_config_music_default_on_dan_bisa_dimatikan(monkeypatch, tmp_path):
 # audio.py — pemisahan vokal (demucs) + mix BGM (docs/01 §27)
 # ---------------------------------------------------------------------------
 
+
 def test_separate_accompaniment_tanpa_demucs(monkeypatch, tmp_path):
     monkeypatch.setattr(audio, "demucs_available", lambda: False)
-    res = audio.separate_accompaniment(LOG, tmp_path / "src.mp4", tmp_path / "work", tmp_path / "a.wav")
+    res = audio.separate_accompaniment(
+        LOG, tmp_path / "src.mp4", tmp_path / "work", tmp_path / "a.wav"
+    )
     assert res is None
 
 
@@ -517,6 +572,7 @@ def test_mix_voice_with_music_perintah(monkeypatch, tmp_path):
 # callback + payload
 # ---------------------------------------------------------------------------
 
+
 def test_callback_sign_vektor():
     sig = callback.sign("secret", "job1", b'{"a":1}')
     expect = "sha256=" + hmac.new(b"secret", b"job1." + b'{"a":1}', hashlib.sha256).hexdigest()
@@ -524,24 +580,46 @@ def test_callback_sign_vektor():
 
 
 def test_subtitle_dicts_camelcase():
-    rows = [{"idx": 0, "start": 0.0, "end": 6.0, "text_id": "Halo", "text_en": "Hi",
-             "fit": "ok", "tempo": 1.0, "note": ""}]
+    rows = [
+        {
+            "idx": 0,
+            "start": 0.0,
+            "end": 6.0,
+            "text_id": "Halo",
+            "text_en": "Hi",
+            "fit": "ok",
+            "tempo": 1.0,
+            "note": "",
+        }
+    ]
     out = main_mod._subtitle_dicts(rows)
     assert out[0]["textEn"] == "Hi" and out[0]["textId"] == "Halo"
     assert "note" not in out[0]  # note kosong dihilangkan
 
 
 def test_done_payload_revision_number(monkeypatch, tmp_path):
-    _env_base(monkeypatch, tmp_path, INGGRISIN_MODE="revision", INGGRISIN_REVISION_NUMBER="3",
-              INGGRISIN_REVISIONS_URL="https://x.co/r", INGGRISIN_RESULT_DRIVE_FILE_ID="f")
+    _env_base(
+        monkeypatch,
+        tmp_path,
+        INGGRISIN_MODE="revision",
+        INGGRISIN_REVISION_NUMBER="3",
+        INGGRISIN_REVISIONS_URL="https://x.co/r",
+        INGGRISIN_RESULT_DRIVE_FILE_ID="f",
+    )
     cfg = config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
     p = main_mod._done_payload(cfg, {"drive_file_id": "f"})
     assert p["status"] == "done" and p["revision_number"] == 3
 
 
 def test_fetch_revision_validasi(monkeypatch, tmp_path):
-    _env_base(monkeypatch, tmp_path, INGGRISIN_MODE="revision", INGGRISIN_REVISION_NUMBER="1",
-              INGGRISIN_REVISIONS_URL="https://x.co/r", INGGRISIN_RESULT_DRIVE_FILE_ID="f")
+    _env_base(
+        monkeypatch,
+        tmp_path,
+        INGGRISIN_MODE="revision",
+        INGGRISIN_REVISION_NUMBER="1",
+        INGGRISIN_REVISIONS_URL="https://x.co/r",
+        INGGRISIN_RESULT_DRIVE_FILE_ID="f",
+    )
     cfg = config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
 
     class Resp:
@@ -553,8 +631,12 @@ def test_fetch_revision_validasi(monkeypatch, tmp_path):
         def json(self):
             return self._d
 
-    good = {"job_id": cfg.job_id, "revision_number": 1, "srt": "1\n00:00:00,000 --> 00:00:02,000\nHi\n",
-            "manifest": {"segments": [{"idx": 0, "start": 0.0, "end": 2.0}]}}
+    good = {
+        "job_id": cfg.job_id,
+        "revision_number": 1,
+        "srt": "1\n00:00:00,000 --> 00:00:02,000\nHi\n",
+        "manifest": {"segments": [{"idx": 0, "start": 0.0, "end": 2.0}]},
+    }
     monkeypatch.setattr(main_mod.requests, "get", lambda *a, **k: Resp(good))
     assert main_mod._fetch_revision(cfg, LOG)["srt"].startswith("1\n")
 
@@ -573,6 +655,7 @@ def test_fetch_revision_validasi(monkeypatch, tmp_path):
 # tts.py — _synth_one kompatibel piper-tts 1.2 (synthesize) & 1.3+ (synthesize_wav)
 # ---------------------------------------------------------------------------
 
+
 def test_synth_one_piper_12_pakai_synthesize(tmp_path):
     """piper-tts 1.2.0 (versi di-pin) cuma punya synthesize(text, wav_file)."""
     from engine import tts
@@ -580,10 +663,17 @@ def test_synth_one_piper_12_pakai_synthesize(tmp_path):
     written = {}
 
     class FakeWav:
-        def setnchannels(self, n): written['ch'] = n
-        def setsampwidth(self, n): written['sw'] = n
-        def setframerate(self, n): written['fr'] = n
-        def writeframes(self, b): written['frames'] = len(b)
+        def setnchannels(self, n):
+            written["ch"] = n
+
+        def setsampwidth(self, n):
+            written["sw"] = n
+
+        def setframerate(self, n):
+            written["fr"] = n
+
+        def writeframes(self, b):
+            written["frames"] = len(b)
 
     class Voice12:
         def synthesize(self, text, wav_file, syn_config=None):
@@ -597,6 +687,7 @@ def test_synth_one_piper_12_pakai_synthesize(tmp_path):
     tts._synth_one(Voice12(), "hello world", dst)
     assert dst.exists() and dst.stat().st_size > 1000
     import wave
+
     with wave.open(str(dst), "rb") as w:
         assert w.getnchannels() == 1 and w.getframerate() == 22050
 
@@ -609,18 +700,19 @@ def test_synth_one_piper_13_pakai_synthesize_wav(tmp_path):
 
     class Voice13:
         def synthesize_wav(self, text, fh):
-            called['text'] = text
+            called["text"] = text
             fh.write(b"RIFF" + b"\x00" * 4000)
 
     dst = tmp_path / "line_00001.wav"
     tts._synth_one(Voice13(), "hello", dst)
-    assert called.get('text') == "hello"
+    assert called.get("text") == "hello"
     assert dst.exists() and dst.stat().st_size > 1000
 
 
 # ---------------------------------------------------------------------------
 # upload.py — proxy upload menandatangani `${job_id}.${sha256}` (skema callback)
 # ---------------------------------------------------------------------------
+
 
 def test_upload_proxy_mengirim_signature_hmac(tmp_path, monkeypatch):
     import hashlib
@@ -651,13 +743,137 @@ def test_upload_proxy_mengirim_signature_hmac(tmp_path, monkeypatch):
 
     monkeypatch.setattr(upload_mod.requests, "post", fake_post)
     res = upload_mod.upload_result(
-        LOG, p,
+        LOG,
+        p,
         proxy_url="https://app.example.com/api/hooks/v1/jobs/j1/result",
-        filename="hasil.mp4", content_type="video/mp4",
-        job_id="j1", auth_secret="sekret",  # noqa: S106 — secret dummy utk test
+        filename="hasil.mp4",
+        content_type="video/mp4",
+        job_id="j1",
+        auth_secret="sekret",  # noqa: S106 — secret dummy utk test
     )
     sha = hashlib.sha256(p.read_bytes()).hexdigest()
     expect = "sha256=" + hmac_mod.new(b"sekret", f"j1.{sha}".encode(), hashlib.sha256).hexdigest()
     assert captured["headers"]["x-inggrisin-signature"] == expect
     assert captured["data"]["sha256"] == sha
     assert res.drive_file_id == "fid123" and res.mode == "proxy"
+
+
+# ---------------------------------------------------------------------------
+# §29 — whisper translate langsung: aligner + endpoint translations
+# ---------------------------------------------------------------------------
+
+
+def test_align_translation_overlap_dan_fallback_pusat():
+    id_segs = [
+        transcribe_mod.Segment(0.0, 4.0, "Halo"),
+        transcribe_mod.Segment(4.0, 8.0, "Dunia"),
+        transcribe_mod.Segment(8.0, 12.0, "Apa kabar"),
+    ]
+    en_segs = [
+        transcribe_mod.Segment(0.5, 3.5, "Hello"),  # overlap penuh ke slot 0
+        transcribe_mod.Segment(3.6, 7.9, "World"),  # overlap terbesar slot 1
+        transcribe_mod.Segment(13.0, 15.0, "How are you"),  # NOL overlap → pusat terdekat (slot 2)
+    ]
+    out = transcribe_mod.align_translation(id_segs, en_segs)
+    assert out == ["Hello", "World", "How are you"]
+
+
+def test_align_translation_gabung_urut_dan_kosong():
+    id_segs = [transcribe_mod.Segment(0.0, 10.0, "Panjang")]
+    en_segs = [
+        transcribe_mod.Segment(0.0, 4.0, "Part one"),
+        transcribe_mod.Segment(4.0, 8.0, "part two"),
+    ]
+    assert transcribe_mod.align_translation(id_segs, en_segs) == ["Part one part two"]
+    assert transcribe_mod.align_translation(id_segs, []) == [""]
+
+
+def test_transcribe_file_task_translate_pakai_endpoint_translations(monkeypatch, tmp_path):
+    captured = {}
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {
+                "text": "Hello there",
+                "language": "english",
+                "duration": 2.0,
+                "segments": [{"start": 0.0, "end": 2.0, "text": "Hello there"}],
+            }
+
+    def fake_post(url, headers=None, files=None, data=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        return R()
+
+    monkeypatch.setattr(transcribe_mod.requests, "post", fake_post)
+    p = tmp_path / "audio.wav"
+    p.write_bytes(b"x" * 64)
+    tr = transcribe_mod.transcribe_file(
+        LOG, "gsk_k", p, model="whisper-large-v3", language="id", task="translate"
+    )
+    assert captured["url"].endswith("/audio/translations")
+    assert "language" not in captured["data"]  # endpoint translate tak menerima language
+    assert tr.segments[0].text == "Hello there"
+
+
+def test_chat_404_provider_error_transient_retry(monkeypatch):
+    # openrouter/free: 404 "Provider returned error" = transient → backoff+retry
+    calls = []
+    resps = [
+        _HttpResp(404, {"error": {"message": "Provider returned error"}}),
+        _HttpResp(
+            200, {"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}], "usage": {}}
+        ),
+    ]
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json.get("model"))
+        return resps[len(calls) - 1]
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    monkeypatch.setattr(translate.time, "sleep", lambda s: None)
+    content, _ = translate._chat(LOG, "k", "openrouter/free", "s", "u", False, "t")
+    assert content == "OK"
+    assert len(calls) == 2
+
+
+def test_chat_404_data_policy_tidak_diretry(monkeypatch):
+    calls = []
+    resp = _HttpResp(404, {"error": {"message": "No endpoints found matching your data policy"}})
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(1)
+        return resp
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    monkeypatch.setattr(translate.time, "sleep", lambda s: None)
+    with pytest.raises(translate.TranslateError) as e:
+        translate._chat(LOG, "k", "openrouter/free", "s", "u", False, "t")
+    assert len(calls) == 1  # permanen → tanpa retry
+    assert "settings/privacy" in e.value.message
+
+
+def test_translate_json_retry_dengan_backoff(monkeypatch):
+    good = json.dumps(
+        {
+            "segments": [
+                {"idx": 0, "text_en": "Hi everyone"},
+                {"idx": 1, "text_en": "Today we cook rendang"},
+            ],
+            "terms": [],
+        }
+    )
+    seq = ["bukan json", "masih bukan json", good]
+    calls = []
+
+    def fake_chat(log, api_key, model, system, user, json_mode, tag):
+        calls.append(tag)
+        return seq[len(calls) - 1], {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(translate, "_chat", fake_chat)
+    monkeypatch.setattr(translate.time, "sleep", lambda s: None)
+    res = translate.translate(LOG, "k", _segs(), "m")
+    assert calls == ["translate", "translate", "translate"]
+    assert res.segments[0].text_en == "Hi everyone"

@@ -1,10 +1,12 @@
 """
 inggrisin engine v2 — orkestrator DUBBING dengan dua mode.
 
-  --mode first     pipeline penuh:
-                   download → extract audio → Groq Whisper (id) → LLM translate
-                   + time-fit → Piper TTS (satu suara) → voice track timeline →
-                   vertical.py SATU pass (9:16 blur + burn ASS + mux) → Drive
+  --mode first     pipeline penuh (docs/01 §29 — TANPA LLM):
+                   download → extract audio → Groq Whisper 2×
+                   (transcribe id = teks asli + timing kanonik; translate =
+                   Inggris langsung) → align → Piper TTS (satu suara) →
+                   voice track + BGM asli (demucs) → vertical.py SATU pass
+                   (9:16 blur + burn ASS + mux) → Drive
 
   --mode revision  SRT pass-through (docs/00 §6, docs/01 §20):
                    fetch SRT+manifest (tervalidasi di Worker) → download video
@@ -29,7 +31,7 @@ from typing import Any
 
 import requests
 
-from . import audio, callback, download, srt, transcribe, translate, tts, vertical
+from . import audio, callback, download, srt, transcribe, tts, vertical
 from .config import Config, ConfigError
 from .log import Logger, register_secrets
 from .progress import Progress
@@ -305,63 +307,91 @@ def run_first(
     step_ref[0] = "transcribe"
     prog.stage("transcribing", "Mendengarkan ucapan Indonesia")
     t = time.monotonic()
+    # docs/01 §29: DUA pass Whisper Groq atas audio yang sama —
+    #   1) transcribe (language=id) → teks asli + timing kanonik (manifest)
+    #   2) translate (/audio/translations) → Inggris LANGSUNG, tanpa LLM.
+    # LLM (OpenRouter) tidak lagi dipakai di build pertama; persona slang/formal
+    # adalah fitur retranslate di app (docs/01 §28).
+    chunks: list[Path] = []
     if audio.needs_chunking(audio_path):
         chunks = audio.split_chunks(log, audio_path, cfg.chunks_dir)
-        tr = transcribe.transcribe_chunks(
+
+    def _groq(task: str, on_chunk: Any = None) -> transcribe.Transcript:
+        if chunks:
+            return transcribe.transcribe_chunks(
+                log,
+                cfg.groq_api_key,
+                chunks,
+                model=cfg.whisper_model,
+                language="id" if task == "transcribe" else None,
+                on_chunk=on_chunk,
+                task=task,
+            )
+        return transcribe.transcribe_file(
             log,
             cfg.groq_api_key,
-            chunks,
+            audio_path,
             model=cfg.whisper_model,
-            language="id",
-            on_chunk=lambda i, n: prog.send(
-                "transcribing", f"Mendengarkan bagian {i}/{n}", percent=20 + int(20 * i / max(n, 1))
-            ),
+            language="id" if task == "transcribe" else None,
+            task=task,
         )
-        shutil.rmtree(cfg.chunks_dir, ignore_errors=True)
-    else:
-        tr = transcribe.transcribe_file(
-            log, cfg.groq_api_key, audio_path, model=cfg.whisper_model, language="id"
-        )
+
+    tr = _groq(
+        "transcribe",
+        on_chunk=lambda i, n: prog.send(
+            "transcribing", f"Mendengarkan bagian {i}/{n}", percent=20 + int(10 * i / max(n, 1))
+        ),
+    )
     timings["transcribe_s"] = round(time.monotonic() - t, 2)
     report.stage_done("transcribe", timings["transcribe_s"], segments=len(tr.segments))
     if not tr.text.strip():
         raise RuntimeError("Transkrip kosong — video mungkin hanya musik/keheningan")
 
     step_ref[0] = "translate"
-    prog.stage("translating", "Menerjemahkan & memaskan ke durasi")
+    prog.stage("translating", "Menerjemahkan ke Inggris (Whisper langsung, tanpa LLM)")
     t = time.monotonic()
-    in_segs = [
-        translate.InSegment(idx=i, start=s.start, end=s.end, text=s.text)
-        for i, s in enumerate(tr.segments)
-        if (s.text or "").strip()
-    ]
-    tr_res = translate.translate(log, cfg.openrouter_api_key, in_segs, cfg.llm_model)
-    timings["translate_s"] = round(time.monotonic() - t, 2)
-    report.stage_done(
-        "translate", timings["translate_s"], segments=len(tr_res.segments), terms=len(tr_res.terms)
+    tren = _groq(
+        "translate",
+        on_chunk=lambda i, n: prog.send(
+            "translating", f"Menerjemahkan bagian {i}/{n}", percent=30 + int(15 * i / max(n, 1))
+        ),
     )
+    id_segs = [s for s in tr.segments if (s.text or "").strip()]
+    texts_en = transcribe.align_translation(id_segs, tren.segments)
+    shutil.rmtree(cfg.chunks_dir, ignore_errors=True)
+    timings["translate_s"] = round(time.monotonic() - t, 2)
+    empty = sum(1 for x in texts_en if not x)
+    report.stage_done(
+        "translate",
+        timings["translate_s"],
+        segments=len(id_segs),
+        via="whisper-translate",
+        empty=empty,
+    )
+    if not tren.text.strip() or empty == len(id_segs):
+        raise RuntimeError("Terjemahan Whisper kosong — tidak ada teks Inggris yang dihasilkan")
 
     # manifest = sumber kebenaran timing, dikunci mulai sekarang
     manifest = {
         "jobId": cfg.job_id,
         "durationSeconds": round(total_duration, 3),
         "sourceAspect": aspect,
-        "segments": [{"idx": s.idx, "start": s.start, "end": s.end} for s in tr_res.segments],
+        "segments": [{"idx": i, "start": s.start, "end": s.end} for i, s in enumerate(id_segs)],
     }
     cfg.manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
     segs = [
         {
-            "idx": s.idx,
+            "idx": i,
             "start": s.start,
             "end": s.end,
-            "text_id": s.text_id,
-            "text_en": s.text_en,
-            "fit": s.fit,
-            "tempo": s.tempo,
-            "note": s.note,
+            "text_id": s.text,
+            "text_en": texts_en[i],
+            "fit": "ok",
+            "tempo": 1.0,
+            "note": "",
         }
-        for s in tr_res.segments
+        for i, s in enumerate(id_segs)
     ]
     _tts_to_render(cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref)
     res = _upload(cfg, log, prog, report, timings)
@@ -371,14 +401,19 @@ def run_first(
             "duration_seconds": round(total_duration, 3),
             "subtitles": _subtitle_dicts(segs),
             "subtitles_total": len(segs),
-            "terms": tr_res.terms,
+            "terms": [],  # NER istilah = produk era LLM (§29: whisper translate langsung)
             "manifest": manifest,
             "truncated": False,
             "timings": {**timings, "total_s": round(sum(timings.values()), 2)},
             "usage": {
-                "audio_seconds": round(getattr(tr, "audio_seconds_billed", 0.0) or 0.0, 1),
-                "llm_tokens_prompt": tr_res.tokens_prompt,
-                "llm_tokens_completion": tr_res.tokens_completion,
+                # dua pass whisper (transcribe + translate) atas audio yang sama
+                "audio_seconds": round(
+                    (getattr(tr, "audio_seconds_billed", 0.0) or 0.0)
+                    + (getattr(tren, "audio_seconds_billed", 0.0) or 0.0),
+                    1,
+                ),
+                "llm_tokens_prompt": 0,
+                "llm_tokens_completion": 0,
                 "tts_lines": len(segs),
             },
         }

@@ -68,7 +68,7 @@ on:
       whisper_model:
         required: false
         type: string
-        default: 'whisper-large-v3-turbo'
+        default: 'whisper-large-v3'
       llm_model:
         required: false
         type: string

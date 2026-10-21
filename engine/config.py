@@ -157,7 +157,9 @@ class Config:
             source_sha256=opt("INGGRISIN_SOURCE_SHA256"),
             callback_url=req("INGGRISIN_CALLBACK_URL"),
             callback_secret=req("INGGRISIN_CALLBACK_SECRET"),
-            whisper_model=opt("INGGRISIN_WHISPER_MODEL", "whisper-large-v3-turbo"),
+            # §29: v3 penuh (BUKAN turbo) — hanya v3 yang mendukung endpoint
+            # /audio/translations di Groq; biaya tetap receh ($0.111/jam).
+            whisper_model=opt("INGGRISIN_WHISPER_MODEL", "whisper-large-v3"),
             llm_model=opt("INGGRISIN_LLM_MODEL", "openrouter/free"),
             voice=voice,
             drive_folder_id=req("INGGRISIN_DRIVE_FOLDER_ID"),
@@ -179,10 +181,8 @@ class Config:
         if cfg.mode == "first":
             if not cfg.groq_api_key:
                 raise ConfigError("missing_env", "GROQ_API_KEY wajib untuk mode first (Whisper)")
-            if not cfg.openrouter_api_key:
-                raise ConfigError(
-                    "missing_env", "OpenRouter key wajib untuk mode first (terjemahan)"
-                )
+            # §29: OpenRouter TIDAK lagi dipakai build pertama (whisper translate
+            # langsung). Key tetap dibaca bila ada — tidak wajib.
         else:
             if cfg.revision_number <= 0:
                 raise ConfigError(
