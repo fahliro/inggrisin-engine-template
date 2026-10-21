@@ -815,6 +815,7 @@ def test_transcribe_file_task_translate_pakai_endpoint_translations(monkeypatch,
     )
     assert captured["url"].endswith("/audio/translations")
     assert "language" not in captured["data"]  # endpoint translate tak menerima language
+    assert "timestamp_granularities[]" not in captured["data"]  # transcriptions-only (400 bila dikirim)
     assert tr.segments[0].text == "Hello there"
 
 

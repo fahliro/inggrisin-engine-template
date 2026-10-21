@@ -104,9 +104,13 @@ def transcribe_file(
                 data: dict[str, str | float] = {
                     "model": model,
                     "response_format": "verbose_json",
-                    "timestamp_granularities[]": "segment",
                     "temperature": temperature,
                 }
+                if task != "translate":
+                    # HANYA endpoint transcriptions yang menerima param ini;
+                    # /audio/translations menjawab 400 "unknown param".
+                    # Default granularity translations tetap `segment`.
+                    data["timestamp_granularities[]"] = "segment"
                 if language and task != "translate":
                     data["language"] = language
                 if prompt:
