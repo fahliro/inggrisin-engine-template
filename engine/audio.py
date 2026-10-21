@@ -15,6 +15,7 @@ di-extract dan DIKOMPRES sampai di bawah batas, dengan strategi:
 Output selalu 16 kHz mono untuk speech recognition; itu sudah lebih dari cukup
 untuk Whisper dan memperkecil file 4-6x dibanding 44.1 kHz stereo.
 """
+
 from __future__ import annotations
 
 import json
@@ -71,7 +72,9 @@ def _run(log: Logger, cmd: list[str], step: str) -> subprocess.CompletedProcess[
     if proc.returncode != 0:
         # stderr ffmpeg panjang; ambil ekor saja dan jangan sampai memuat path rahasia
         tail = "\n".join(proc.stderr.strip().splitlines()[-12:])
-        raise AudioError("ffmpeg_failed", f"ffmpeg gagal pada {step} (exit {proc.returncode}):\n{tail}")
+        raise AudioError(
+            "ffmpeg_failed", f"ffmpeg gagal pada {step} (exit {proc.returncode}):\n{tail}"
+        )
     return proc
 
 
@@ -80,9 +83,13 @@ def probe(log: Logger, path: Path) -> Probe:
     proc = _run(
         log,
         [
-            "ffprobe", "-v", "error",
-            "-print_format", "json",
-            "-show_format", "-show_streams",
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
             str(path),
         ],
         "probe",
@@ -140,7 +147,9 @@ def will_need_chunking(duration_s: float) -> bool:
     return (kbps * 1000 / 8 * duration_s) > TARGET_AUDIO_BYTES
 
 
-def extract(log: Logger, src: Path, dst: Path, duration_hint: float | None = None) -> tuple[Path, float]:
+def extract(
+    log: Logger, src: Path, dst: Path, duration_hint: float | None = None
+) -> tuple[Path, float]:
     """
     Extract audio ke satu file di bawah TARGET_AUDIO_BYTES.
     Mengembalikan (path, durasi). Path bisa = dst, atau tetap dst (selalu dst).
@@ -156,12 +165,26 @@ def extract(log: Logger, src: Path, dst: Path, duration_hint: float | None = Non
     _run(
         log,
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(src),
-            "-vn", "-sn", "-dn",          # buang video/subtitle/data
-            "-ac", "1", "-ar", str(sr),
-            "-c:a", "libopus", "-b:a", f"{kbps}k",
-            "-map_metadata", "-1",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-vn",
+            "-sn",
+            "-dn",  # buang video/subtitle/data
+            "-ac",
+            "1",
+            "-ar",
+            str(sr),
+            "-c:a",
+            "libopus",
+            "-b:a",
+            f"{kbps}k",
+            "-map_metadata",
+            "-1",
             str(dst),
         ],
         "extract",
@@ -186,7 +209,9 @@ def needs_chunking(path: Path) -> bool:
     return path.stat().st_size > TARGET_AUDIO_BYTES
 
 
-def split_chunks(log: Logger, src: Path, out_dir: Path, chunk_seconds: int = CHUNK_SECONDS) -> list[Path]:
+def split_chunks(
+    log: Logger, src: Path, out_dir: Path, chunk_seconds: int = CHUNK_SECONDS
+) -> list[Path]:
     """
     Potong audio jadi beberapa file. `segment` dengan `-c copy` tidak
     encode ulang → cepat dan lossless.
@@ -197,10 +222,21 @@ def split_chunks(log: Logger, src: Path, out_dir: Path, chunk_seconds: int = CHU
     _run(
         log,
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(src),
-            "-f", "segment", "-segment_time", str(chunk_seconds),
-            "-c", "copy", "-reset_timestamps", "1",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-f",
+            "segment",
+            "-segment_time",
+            str(chunk_seconds),
+            "-c",
+            "copy",
+            "-reset_timestamps",
+            "1",
             pattern,
         ],
         "split",
@@ -214,9 +250,8 @@ def split_chunks(log: Logger, src: Path, out_dir: Path, chunk_seconds: int = CHU
 
 def loudnorm(log: Logger, src: Path, dst: Path, target_i: float = -16.0) -> Path:
     """
-    Normalisasi loudness ke -16 LUFS (standar podcast). Penting untuk audio
-    belajar: user memutar berulang-ulang, level yang konsisten mengurangi lelah.
-    Two-pass supaya akurat.
+    Normalisasi loudness ke -16 LUFS (standar podcast). Level yang konsisten
+    antar segmen membuat hasil dubbing nyaman didengar. Two-pass supaya akurat.
     """
     _require_ffmpeg()
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -227,12 +262,25 @@ def loudnorm(log: Logger, src: Path, dst: Path, target_i: float = -16.0) -> Path
     _run(
         log,
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(src),
-            "-af", measured,
-            "-ar", "44100", "-ac", "1",
-            "-c:a", "libmp3lame", "-q:a", "4",
-            "-map_metadata", "-1",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-af",
+            measured,
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "4",
+            "-map_metadata",
+            "-1",
             str(dst),
         ],
         "loudnorm-apply",
@@ -244,10 +292,16 @@ def _parse_loudnorm(log: Logger, src: Path, target_i: float) -> str:
     """Pass 1: ambil measured_I/TP/LRA/thresh untuk dipakai di pass 2."""
     proc = subprocess.run(
         [
-            "ffmpeg", "-hide_banner", "-nostats",
-            "-i", str(src),
-            "-af", f"loudnorm=I={target_i}:TP=-1.5:LRA=11:print_format=json",
-            "-f", "null", "-",
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(src),
+            "-af",
+            f"loudnorm=I={target_i}:TP=-1.5:LRA=11:print_format=json",
+            "-f",
+            "null",
+            "-",
         ],
         capture_output=True,
         text=True,
@@ -282,11 +336,23 @@ def to_mp3(log: Logger, src: Path, dst: Path) -> Path:
     _run(
         log,
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(src),
-            "-ar", "44100", "-ac", "1",
-            "-c:a", "libmp3lame", "-q:a", "4",
-            "-map_metadata", "-1",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "4",
+            "-map_metadata",
+            "-1",
             str(dst),
         ],
         "to-mp3",
@@ -346,14 +412,39 @@ def apply_tempo(log: Logger, src: Path, dst: Path, tempo: float) -> Path:
     tempo = min(2.0, max(0.5, float(tempo)))
     if abs(tempo - 1.0) < 0.01:
         cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
-            "-ar", str(VOICE_SR), "-ac", "1", "-c:a", "pcm_s16le", str(dst),
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-ar",
+            str(VOICE_SR),
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(dst),
         ]
     else:
         cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
-            "-filter:a", f"atempo={tempo:.4f}",
-            "-ar", str(VOICE_SR), "-ac", "1", "-c:a", "pcm_s16le", str(dst),
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-filter:a",
+            f"atempo={tempo:.4f}",
+            "-ar",
+            str(VOICE_SR),
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(dst),
         ]
     _run(log, cmd, f"tempo {tempo:.2f}x")
     return dst
@@ -361,9 +452,20 @@ def apply_tempo(log: Logger, src: Path, dst: Path, tempo: float) -> Path:
 
 def _make_silence(log: Logger, seconds: float, dst: Path) -> Path:
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", f"anullsrc=r={VOICE_SR}:cl=mono",
-        "-t", f"{max(0.01, seconds):.3f}", "-c:a", "pcm_s16le", str(dst),
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"anullsrc=r={VOICE_SR}:cl=mono",
+        "-t",
+        f"{max(0.01, seconds):.3f}",
+        "-c:a",
+        "pcm_s16le",
+        str(dst),
     ]
     _run(log, cmd, "silence")
     return dst
@@ -398,7 +500,9 @@ def build_voice_track(
             lines.append(f"file '{gp}'")
             gap_n += 1
         elif gap < -0.02:
-            log.warn(f"overlap {-gap:.2f}s sebelum {wav.name} — suara sebelumnya molor, celah dipotong")
+            log.warn(
+                f"overlap {-gap:.2f}s sebelum {wav.name} — suara sebelumnya molor, celah dipotong"
+            )
         lines.append(f"file '{wav.resolve()}'")
         cursor = max(cursor, start) + duration_of(log, wav)
     tail = total_s - cursor
@@ -409,9 +513,22 @@ def build_voice_track(
     list_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     _run(
         log,
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "concat", "-safe", "0", "-i", str(list_file),
-         "-c", "copy", str(out)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            "-c",
+            "copy",
+            str(out),
+        ],
         "voice track concat",
     )
     return out

@@ -18,7 +18,7 @@ HuggingFace ke `PIPERS_VOICE_DIR` dan di-cache oleh `actions/cache` di
 workflow — jadi run kedua dan seterusnya tidak mengunduh ulang.
 
 Kenapa sintesis per segmen, bukan satu teks panjang?
-  - UI belajar butuh "klik kalimat → dengar kalimat itu".
+  - Dubbing butuh audio per kalimat, sejajar indeks timeline asli.
   - Piper lebih stabil pada teks pendek (jeda & intonasi lebih natural).
   - Kalau satu segmen gagal, segmen lain tetap jadi (partial success).
   Biayanya: penggabungan audio. Kita pakai ffmpeg concat, murah.
@@ -281,7 +281,7 @@ def synthesize_segments(
 ) -> TtsResult:
     """
     Sintesis tiap segmen jadi WAV terpisah, lalu gabungkan jadi satu file
-    dengan jeda antar segmen (penting untuk shadowing: ada ruang bernapas).
+    dengan jeda antar segmen (ruang bernapas antar kalimat).
     """
     t0 = time.monotonic()
     model, config = ensure_voice(log, voice_id)

@@ -47,9 +47,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def _ffmpeg_version() -> str:
+    """Token versi ringkas ('6.1.1-3ubuntu5') — kontrak callback membatasi 32 char.
+
+    Baris pertama `ffmpeg -version` utuh ("ffmpeg version 6.1.1-3ubuntu5
+    Copyright ...") bisa ~80 char dan membuat callback hasil DITOLAK skema.
+    """
     try:
         out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, check=False)
-        return (out.stdout or "").splitlines()[0][:64] if out.returncode == 0 else "?"
+        line = (out.stdout or "").splitlines()[0] if out.returncode == 0 else ""
+        parts = line.split()
+        return (parts[2] if len(parts) > 2 else line)[:32] or "?"
     except OSError:
         return "?"
 

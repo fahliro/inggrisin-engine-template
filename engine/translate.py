@@ -9,7 +9,7 @@ Menggantikan polish.py (era konsep lama). Perbedaan prinsip:
     satu kali (repair pass "ringkas lagi").
   * Kegagalan LLM = job GAGAL (docs/01 §22) — tidak ada hasil parsial.
   * Istilah/nama diri dipertahankan otomatis (NER oleh LLM, dikembalikan
-    sebagai `terms` untuk kartu baca-saja di Studio — bukan input user).
+    sebagai `terms` untuk kartu baca-saja di halaman job — bukan input user).
 """
 
 from __future__ import annotations
@@ -269,7 +269,7 @@ def _batch(segments: list[InSegment], max_chars: int) -> list[list[InSegment]]:
 def _error_detail(r: requests.Response, limit: int = 300) -> str:
     """Body error OpenRouter dalam bentuk ringkas — `error.message` JSON diprioritaskan.
 
-    Tanpa ini, job gagal hanya menampilkan `OpenRouter HTTP 404` di Studio —
+    Tanpa ini, job gagal hanya menampilkan `OpenRouter HTTP 404` di halaman job —
     tidak cukup untuk diagnosis; pesan error harus actionable.
     """
     raw = (r.text or "").strip().replace("\n", " ")
