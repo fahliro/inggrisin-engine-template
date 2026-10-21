@@ -31,7 +31,7 @@ from typing import Any
 
 import requests
 
-from . import audio, callback, download, srt, transcribe, tts, vertical
+from . import audio, callback, download, groq_llm, srt, transcribe, tts, vertical
 from .config import Config, ConfigError
 from .log import Logger, register_secrets
 from .progress import Progress
@@ -399,7 +399,17 @@ def run_first(
             id_segs = [s for s in tr.segments if (s.text or "").strip()]
             texts_en = transcribe.align_translation(id_segs, tren.segments)
         else:
-            log.warn("transkrip auto-detect juga degenerat — pertahankan hasil semula")
+            # Sumber konsisten (forced-id == auto-detect) sementara translate
+            # jauh lebih panjang → translate Whisper dicurigai BERHALUSINASI
+            # (pola khas BGM/keheningan). Jangan publikasikan halusinasi:
+            # terjemahkan teks sumber via LLM Groq (docs/01 §32).
+            log.warn(
+                "transkrip auto-detect juga degenerat — translate Whisper dicurigai "
+                "halusinasi; terjemahan teks sumber via LLM Groq gpt-oss-20b"
+            )
+            items = [(i, s.text, srt.budget_of(s.start, s.end)) for i, s in enumerate(id_segs)]
+            llm_en = groq_llm.translate_segments(log, cfg.groq_api_key, items)
+            texts_en = [llm_en.get(i, "") for i in range(len(id_segs))]
 
     shutil.rmtree(cfg.chunks_dir, ignore_errors=True)
     timings["translate_s"] = round(time.monotonic() - t, 2)

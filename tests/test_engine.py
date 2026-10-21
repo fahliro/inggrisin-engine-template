@@ -970,3 +970,70 @@ def test_split_long_rows_teks_sumber_yang_panjang_juga_dipecah():
     assert len(out) >= 2
     for r in out:
         assert len(r["text_id"]) <= srt.MAX_SUB_CHARS
+
+
+def test_groq_llm_translate_segments_sukses(monkeypatch):
+    from engine import groq_llm
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": '{"segments":[{"idx":0,"text_en":"Thank you."}]}'}}
+                ]
+            }
+
+    seen = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen["body"] = json
+        return R()
+
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    out = groq_llm.translate_segments(LOG, "k", [(0, "Terima kasih.", 187)])
+    assert out == {0: "Thank you."}
+    assert seen["body"]["model"] == "openai/gpt-oss-20b"
+    assert "idx=0 budget=187" in seen["body"]["messages"][1]["content"]
+
+
+def test_groq_llm_retry_429_lalu_sukses(monkeypatch):
+    from engine import groq_llm
+
+    calls = {"n": 0}
+
+    class R429:
+        status_code = 429
+        text = "rate limit"
+
+    class R200:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"segments":[{"idx":1,"text_en":"Hi."}]}'}}]}
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        return R429() if calls["n"] == 1 else R200()
+
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    monkeypatch.setattr(groq_llm.time, "sleep", lambda s: None)
+    out = groq_llm.translate_segments(LOG, "k", [(1, "Hai.", 50)])
+    assert out == {1: "Hi."}
+    assert calls["n"] == 2
+
+
+def test_groq_llm_idx_hilang_gagal(monkeypatch):
+    from engine import groq_llm
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"segments":[{"idx":0,"text_en":"x"}]}'}}]}
+
+    monkeypatch.setattr(groq_llm.requests, "post", lambda url, **kw: R())
+    monkeypatch.setattr(groq_llm.time, "sleep", lambda s: None)
+    with pytest.raises(groq_llm.GroqLlmError):
+        groq_llm.translate_segments(LOG, "k", [(0, "a", 10), (1, "b", 10)])
