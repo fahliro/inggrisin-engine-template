@@ -369,7 +369,7 @@ def run_first(
         _en_chars = sum(len((s.text or "").strip()) for s in tren.segments)
         log.warn(
             f"transkrip sumber degenerat: {_id_chars} char vs {_en_chars} char Inggris — "
-            f"audio kemungkinan bukan bahasa '{cfg.source_language}'; "
+            "audio kemungkinan bukan bahasa sumber wajib ('id'); "
             "ulang transcribe dengan deteksi bahasa otomatis"
         )
         if chunks:
