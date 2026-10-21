@@ -72,7 +72,7 @@ on:
       llm_model:
         required: false
         type: string
-        default: 'minimax/minimax-m3.1-flash:free'
+        default: 'openrouter/free'
       voice:
         required: false
         type: string

@@ -265,7 +265,7 @@ def test_chat_404_data_policy_menyertakan_body_dan_petunjuk(monkeypatch):
     resp = _HttpResp(404, {"error": {"message": "No endpoints found matching your data policy"}})
     monkeypatch.setattr(translate.requests, "post", lambda *a, **k: resp)
     with pytest.raises(translate.TranslateError) as e:
-        translate._chat(LOG, "k", "minimax/minimax-m3.1-flash:free", "s", "u", False, "t")
+        translate._chat(LOG, "k", "openrouter/free", "s", "u", False, "t")
     assert e.value.code == "openrouter_failed"
     assert "No endpoints found matching your data policy" in e.value.message
     assert "openrouter.ai/settings/privacy" in e.value.message
@@ -316,7 +316,7 @@ def test_chat_matikan_reasoning_dan_json_mode(monkeypatch):
         return R()
 
     monkeypatch.setattr(translate.requests, "post", fake_post)
-    translate._chat(LOG, "k", "minimax/minimax-m3.1-flash:free", "s", "u", True, "t")
+    translate._chat(LOG, "k", "openrouter/free", "s", "u", True, "t")
     assert captured["reasoning"] == {"enabled": False}
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["max_tokens"] == 16000
@@ -348,7 +348,7 @@ def test_chat_reasoning_wajib_diulang_tanpa_param(monkeypatch):
         return R400() if "reasoning" in json else R200()
 
     monkeypatch.setattr(translate.requests, "post", fake_post)
-    content, _ = translate._chat(LOG, "k", "minimax/minimax-m3.1-flash:free", "s", "u", True, "t")
+    content, _ = translate._chat(LOG, "k", "openrouter/free", "s", "u", True, "t")
     assert content == "{}"
     assert len(calls) == 2
     assert "reasoning" not in calls[1]

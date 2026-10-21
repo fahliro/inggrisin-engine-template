@@ -293,7 +293,8 @@ def _data_policy_hint(model: str, detail: str) -> str:
     menyebut persis ke mana user harus pergi.
     """
     low = detail.lower()
-    if model.endswith(":free") and ("data policy" in low or "no endpoints" in low):
+    is_free_target = model.endswith(":free") or model.startswith("openrouter/")
+    if is_free_target and ("data policy" in low or "no endpoints" in low):
         return (
             " | Solusi: model :free butuh izin training di akun OpenRouter — buka"
             " https://openrouter.ai/settings/privacy lalu nyalakan 'Enable prompt logging'"
