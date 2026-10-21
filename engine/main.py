@@ -182,6 +182,25 @@ def _tts_to_render(
     timings["voice_track_s"] = round(time.monotonic() - t, 2)
     report.stage_done("voice_track", timings["voice_track_s"], placements=len(placements))
 
+    # BGM/SFX asli dipertahankan (docs/01 §27): pisahkan vokal asli (demucs) →
+    # mix dengan track dub. GAGAL DI MANA PUN → lanjut dengan audio dub bersih
+    # (musik adalah peningkatan, bukan syarat hasil valid).
+    final_audio = cfg.voice_track_path
+    if cfg.options.get("music"):
+        step_ref[0] = "music"
+        prog.stage("synthesizing", "Mempertahankan BGM/SFX asli")
+        t = time.monotonic()
+        accom = audio.separate_accompaniment(
+            log, cfg.source_path, cfg.music_dir, cfg.accompaniment_path
+        )
+        if accom is not None:
+            audio.mix_voice_with_music(
+                log, cfg.voice_track_path, accom, total_duration, cfg.final_audio_path
+            )
+            final_audio = cfg.final_audio_path
+            timings["music_s"] = round(time.monotonic() - t, 2)
+            report.stage_done("music", timings["music_s"])
+
     step_ref[0] = "render"
     prog.stage("rendering", "Menyusun video vertikal + menempel subtitle (satu pass)")
     t = time.monotonic()
@@ -196,7 +215,7 @@ def _tts_to_render(
     )
     cmd = vertical.build_render_cmd(
         cfg.source_path,
-        cfg.voice_track_path,
+        final_audio,
         cfg.ass_path,
         cfg.final_video_path,
         aspect,

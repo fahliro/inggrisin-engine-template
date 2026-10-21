@@ -17,6 +17,7 @@ Perubahan v2 (docs/00 §5–§6):
   - drive_folder_id + dubbed_file_name wajib (folder per-video dibuat app
     sebelum dispatch).
 """
+
 from __future__ import annotations
 
 import json
@@ -24,16 +25,20 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Konstanta kontrak — HARUS identik dengan LOCKED di packages/shared/contracts.ts
+from .tts import VOICES
+
+# Konstanta kontrak — HARUS identik dengan LOCKED di packages/shared/contracts.ts.
+# CATATAN: `music` TIDAK lagi dikunci (docs/01 §27): mempertahankan BGM/SFX adalah
+# kemampuan opsional — engine menerima true/false dari app (default true) dan
+# selalu fallback mulus ke audio bersih bila pemisahan vokal gagal.
 LOCKED_OPTIONS = {
     "fit_mode": "blur",
     "timing": "strict",
     "tempo_max": 1.25,
     "subtitles": "burn",
-    "music": False,
     "subtitle_bottom_pct": 19,
 }
-LOCKED_VOICE = "en_US-lessac-medium"
+LOCKED_VOICE = "en_US-lessac-medium"  # default; pilihan lain = katalog tts.VOICES
 
 
 class ConfigError(Exception):
@@ -128,11 +133,13 @@ class Config:
                 )
 
         voice = opt("INGGRISIN_VOICE", LOCKED_VOICE)
-        if voice != LOCKED_VOICE:
-            # satu suara, tanpa pilihan (docs/01 §21)
+        # suara = pilihan user dari katalog Piper (docs/01 §27, menggantikan
+        # kunci satu-suara §21). Di luar katalog → tolak (proteksi dua arah:
+        # app juga memvalidasi terhadap VOICES di @inggrisin/shared).
+        if voice not in VOICES:
             raise ConfigError(
                 "contract_mismatch",
-                f"voice={voice!r} tidak sesuai kontrak (satu suara: {LOCKED_VOICE!r})",
+                f"voice={voice!r} tidak dikenal; pilihan: {', '.join(sorted(VOICES))}",
             )
 
         cfg = Config(
@@ -163,7 +170,9 @@ class Config:
             report_path=report_path,
             github_run_id=opt("GITHUB_RUN_ID_OUT") or opt("GITHUB_RUN_ID", ""),
             github_run_url=opt("GITHUB_RUN_URL_OUT", ""),
-            options=dict(LOCKED_OPTIONS),
+            # music = kemampuan (bukan kunci kontrak): app boleh mengirim
+            # false; default true = BGM/SFX asli dipertahankan (docs/01 §27).
+            options=dict(LOCKED_OPTIONS, music=bool(raw_opts.get("music", True))),
         )
 
         # validasi per mode
@@ -171,12 +180,18 @@ class Config:
             if not cfg.groq_api_key:
                 raise ConfigError("missing_env", "GROQ_API_KEY wajib untuk mode first (Whisper)")
             if not cfg.openrouter_api_key:
-                raise ConfigError("missing_env", "OpenRouter key wajib untuk mode first (terjemahan)")
+                raise ConfigError(
+                    "missing_env", "OpenRouter key wajib untuk mode first (terjemahan)"
+                )
         else:
             if cfg.revision_number <= 0:
-                raise ConfigError("missing_env", "INGGRISIN_REVISION_NUMBER wajib > 0 untuk mode revision")
+                raise ConfigError(
+                    "missing_env", "INGGRISIN_REVISION_NUMBER wajib > 0 untuk mode revision"
+                )
             if not cfg.revisions_url:
-                raise ConfigError("missing_env", "INGGRISIN_REVISIONS_URL wajib untuk mode revision")
+                raise ConfigError(
+                    "missing_env", "INGGRISIN_REVISIONS_URL wajib untuk mode revision"
+                )
             if not cfg.result_drive_file_id:
                 raise ConfigError(
                     "missing_env",
@@ -211,6 +226,18 @@ class Config:
     @property
     def voice_track_path(self) -> Path:
         return self.workspace / "voice.wav"
+
+    @property
+    def music_dir(self) -> Path:
+        return self.workspace / "music"
+
+    @property
+    def accompaniment_path(self) -> Path:
+        return self.music_dir / "accompaniment.wav"
+
+    @property
+    def final_audio_path(self) -> Path:
+        return self.workspace / "final_audio.wav"
 
     @property
     def ass_path(self) -> Path:

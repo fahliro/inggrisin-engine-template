@@ -432,12 +432,85 @@ def test_config_options_terkunci(monkeypatch, tmp_path):
     assert e.value.code == "contract_mismatch"
 
 
-def test_config_voice_terkunci(monkeypatch, tmp_path):
+def test_config_voice_katalog_diterima(monkeypatch, tmp_path):
+    # docs/01 §27: suara = pilihan user dari katalog Piper (bukan kunci mati)
     _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
               INGGRISIN_VOICE="en_US-ryan-high")
+    cfg = config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
+    assert cfg.voice == "en_US-ryan-high"
+
+
+def test_config_voice_diluar_katalog_ditolak(monkeypatch, tmp_path):
+    _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
+              INGGRISIN_VOICE="id_ID-penipu-medium")
     with pytest.raises(config_mod.ConfigError) as e:
         config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
-    assert "satu suara" in e.value.message
+    assert "tidak dikenal" in e.value.message
+
+
+def test_config_music_default_on_dan_bisa_dimatikan(monkeypatch, tmp_path):
+    _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o")
+    cfg = config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
+    assert cfg.options["music"] is True
+    _env_base(monkeypatch, tmp_path, GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
+              INGGRISIN_OPTIONS='{"music": false}')
+    cfg2 = config_mod.Config.load(tmp_path / "w2", tmp_path / "o2", tmp_path / "r2.json")
+    assert cfg2.options["music"] is False
+
+
+# ---------------------------------------------------------------------------
+# audio.py — pemisahan vokal (demucs) + mix BGM (docs/01 §27)
+# ---------------------------------------------------------------------------
+
+def test_separate_accompaniment_tanpa_demucs(monkeypatch, tmp_path):
+    monkeypatch.setattr(audio, "demucs_available", lambda: False)
+    res = audio.separate_accompaniment(LOG, tmp_path / "src.mp4", tmp_path / "work", tmp_path / "a.wav")
+    assert res is None
+
+
+def test_separate_accompaniment_sukses(monkeypatch, tmp_path):
+    monkeypatch.setattr(audio, "demucs_available", lambda: True)
+    calls = []
+
+    def fake_run(log, cmd, step):
+        calls.append(cmd)
+        if "demucs" in cmd:
+            stem = tmp_path / "work" / audio.DEMUCS_MODEL / "src_audio" / "no_vocals.wav"
+            stem.parent.mkdir(parents=True, exist_ok=True)
+            stem.write_bytes(b"x" * 4096)
+        return None
+
+    monkeypatch.setattr(audio, "_run", fake_run)
+    out = tmp_path / "acc.wav"
+    res = audio.separate_accompaniment(LOG, tmp_path / "src.mp4", tmp_path / "work", out)
+    assert res == out and out.exists()
+    assert any("demucs" in c for c in calls)
+
+
+def test_separate_accompaniment_gagal_graceful(monkeypatch, tmp_path):
+    monkeypatch.setattr(audio, "demucs_available", lambda: True)
+
+    def boom(log, cmd, step):
+        raise audio.AudioError("ffmpeg_failed", "pura-pura rusak")
+
+    monkeypatch.setattr(audio, "_run", boom)
+    res = audio.separate_accompaniment(LOG, tmp_path / "s.mp4", tmp_path / "w", tmp_path / "o.wav")
+    assert res is None  # TIDAK melempar — pemanggil fallback ke dub bersih
+
+
+def test_mix_voice_with_music_perintah(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(audio, "_run", lambda log, cmd, step: calls.append(cmd))
+    monkeypatch.setattr(audio, "loudnorm", lambda log, src, dst, target_i=-16.0: dst)
+    v = tmp_path / "voice.wav"
+    v.write_bytes(b"1")
+    m = tmp_path / "music.wav"
+    m.write_bytes(b"1")
+    audio.mix_voice_with_music(LOG, v, m, 12.0, tmp_path / "final.wav")
+    joined = " ".join(calls[0])
+    assert "amix=inputs=2:duration=first:normalize=0" in joined
+    assert "volume=0.600" in joined
+    assert "atrim=0:12.000" in joined
 
 
 # ---------------------------------------------------------------------------

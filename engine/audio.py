@@ -22,6 +22,7 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -469,6 +470,138 @@ def _make_silence(log: Logger, seconds: float, dst: Path) -> Path:
     ]
     _run(log, cmd, "silence")
     return dst
+
+
+DEMUCS_MODEL = "htdemucs"
+
+
+def demucs_available() -> bool:
+    """True bila paket demucs ter-install di interpreter yang sama."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("demucs") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def separate_accompaniment(log: Logger, src_video: Path, work: Path, out: Path) -> Path | None:
+    """Pisahkan vokal asli dari BGM/SFX memakai demucs (htdemucs, two-stems).
+
+    Mengembalikan path stem `no_vocals` (musik tanpa suara narator) atau None
+    bila gagal — PEMANGGIL WAJIB fallback ke dub tanpa musik (docs/01 §27:
+    mempertahankan BGM itu peningkatan, bukan syarat hasil yang valid).
+
+    Alur: ekstrak audio kualitas penuh (44.1 kHz stereo — BGM butuh high-end
+    yang sudah dibuang di audio 16 kHz mono untuk Whisper) → demucs → stem.
+    """
+    if not demucs_available():
+        log.warn("demucs tidak tersedia — BGM/SFX asli tidak dipertahankan")
+        return None
+    work.mkdir(parents=True, exist_ok=True)
+    src_audio = work / "src_audio.wav"
+    try:
+        _run(
+            log,
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(src_video),
+                "-vn",
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                "-c:a",
+                "pcm_s16le",
+                str(src_audio),
+            ],
+            "extract audio penuh (utk demucs)",
+        )
+        _run(
+            log,
+            [
+                sys.executable,
+                "-m",
+                "demucs",
+                "--two-stems=vocals",
+                "-n",
+                DEMUCS_MODEL,
+                "-d",
+                "cpu",
+                "-o",
+                str(work),
+                str(src_audio),
+            ],
+            "pemisahan vokal (demucs htdemucs)",
+        )
+    except AudioError as e:
+        log.warn(f"pemisahan vokal gagal — lanjut tanpa BGM: {e.message.splitlines()[0]}")
+        return None
+    no_vocals = work / DEMUCS_MODEL / src_audio.stem / "no_vocals.wav"
+    if not no_vocals.exists() or no_vocals.stat().st_size < 1024:
+        log.warn(f"stem demucs tidak ditemukan: {no_vocals.name} — lanjut tanpa BGM")
+        return None
+    shutil.copyfile(no_vocals, out)
+    log.info(f"BGM/SFX asli dipertahankan ({out.stat().st_size / 1e6:.1f} MB)")
+    return out
+
+
+def mix_voice_with_music(
+    log: Logger,
+    voice: Path,
+    music: Path,
+    total_s: float,
+    out: Path,
+    music_gain: float = 0.6,
+) -> Path:
+    """Campur track dub (voice) + iringan asli (music) → out, lalu loudnorm.
+
+    - voice: 22050 Hz mono (build_voice_track) → di-resample ke 44.1 kHz stereo
+    - music di-attenuasi (`music_gain`) agar dub tetap dominan, dipotong ke
+      total_s (amix duration=first memakai panjang voice sebagai acuan)
+    - loudnorm two-pass menjaga hasil konsisten -16 LUFS (standar podcast)
+    """
+    raw = out.with_suffix(".raw.wav")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fc = (
+        "[0:a]aresample=44100,aformat=channel_layouts=stereo[v];"
+        f"[1:a]volume={music_gain:.3f},atrim=0:{max(0.1, total_s):.3f},asetpts=PTS-STARTPTS[m];"
+        "[v][m]amix=inputs=2:duration=first:normalize=0[mix]"
+    )
+    _run(
+        log,
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(voice),
+            "-i",
+            str(music),
+            "-filter_complex",
+            fc,
+            "-map",
+            "[mix]",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-c:a",
+            "pcm_s16le",
+            str(raw),
+        ],
+        "mix voice+music",
+    )
+    loudnorm(log, raw, out)
+    raw.unlink(missing_ok=True)
+    return out
 
 
 def build_voice_track(
