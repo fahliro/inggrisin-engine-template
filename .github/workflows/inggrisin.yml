@@ -353,6 +353,9 @@ jobs:
       # ------------------------------------------------------------------
       - name: Upload debug artifact
         if: ${{ always() }}
+        # artifact = debug saja; kuota storage akun yang penuh TIDAK BOLEH
+        # membuat run sukses terlihat gagal (callback engine sudah terkirim).
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: inggrisin-${{ inputs.job_id }}-logs
