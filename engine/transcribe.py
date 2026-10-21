@@ -200,8 +200,8 @@ def _parse(
                 end=float(s.get("end", 0.0)),
                 text=str(s.get("text", "")).strip(),
                 words=words,
-                no_speech_prob=float(nsp) if isinstance(nsp, (int, float)) else None,
-                avg_logprob=float(alp) if isinstance(alp, (int, float)) else None,
+                no_speech_prob=float(nsp) if isinstance(nsp, int | float) else None,
+                avg_logprob=float(alp) if isinstance(alp, int | float) else None,
             )
         )
 
