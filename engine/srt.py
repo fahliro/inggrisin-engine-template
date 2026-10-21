@@ -11,6 +11,7 @@ Kontrak (docs/00 §6):
   - teks disanitasi sebelum burn-in: tag ASS {..} dan karakter kontrol dibuang
     (Worker sudah menolak; engine tetap defensif — defense in depth)
 """
+
 from __future__ import annotations
 
 import re
@@ -110,7 +111,9 @@ class SrtError(Exception):
         self.message = message
 
 
-def cues_match_manifest(cues: list[Cue], manifest_segments: list[dict], tolerance_s: float = 0.002) -> list[str]:
+def cues_match_manifest(
+    cues: list[Cue], manifest_segments: list[dict], tolerance_s: float = 0.002
+) -> list[str]:
     """
     Aturan §6-1 dari sisi runner: jumlah + timestamp SRT harus identik dengan
     manifest (yang dikirim app bersama SRT). Mengembalikan daftar masalah
@@ -134,3 +137,128 @@ def cues_match_manifest(cues: list[Cue], manifest_segments: list[dict], toleranc
 def validate_srt_size(srt: str) -> None:
     if len(srt.encode("utf-8")) > MAX_SRT_BYTES:
         raise SrtError("srt_too_large", f"SRT melebihi {MAX_SRT_BYTES} byte")
+
+
+# ---------------------------------------------------------------------------
+# Keterbacaan: pecah baris subtitle terlalu panjang (docs/01 §32)
+# ---------------------------------------------------------------------------
+# Satu baris berisi enam kalimat = "dinding teks" saat burn-in dan satu frasa
+# TTS yang terlalu panjang; praktik subtitle standar ≈ 2 baris × 45 char per
+# cue. Pemecahan deterministik di batas kalimat, timing proporsional char,
+# teks dua bahasa dipecah paralel supaya baris tetap sejajar 1:1.
+MAX_SUB_CHARS = 90
+_MAX_GROUPS = 12
+_SENT_RE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _sentence_chunks(text: str, max_chars: int) -> list[str]:
+    """Pecah teks jadi chunk ≤ max_chars di batas kalimat (fallback: kata)."""
+    parts = [p.strip() for p in _SENT_RE.split(text or "") if p.strip()]
+    if not parts:
+        t = (text or "").strip()
+        parts = [t] if t else []
+    chunks: list[str] = []
+    cur = ""
+    for p in parts:
+        if cur and len(cur) + 1 + len(p) > max_chars:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = f"{cur} {p}".strip() if cur else p
+    if cur:
+        chunks.append(cur)
+    out: list[str] = []
+    for c in chunks:
+        while len(c) > max_chars:  # satu kalimat > batas: potong di batas kata
+            cut = c.rfind(" ", 0, max_chars)
+            if cut < max_chars // 2:
+                cut = max_chars
+            out.append(c[:cut].strip())
+            c = c[cut:].strip()
+        if c:
+            out.append(c)
+    return out
+
+
+def _group_capped(chunks: list[str], max_chars: int) -> list[str]:
+    """Greedy: gabung chunk berurutan selama ≤ max_chars (hard cap)."""
+    groups: list[str] = []
+    cur = ""
+    for c in chunks:
+        cand = f"{cur} {c}".strip() if cur else c
+        if cur and len(cand) > max_chars:
+            groups.append(cur)
+            cur = c
+        else:
+            cur = cand
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+def _fit_count(groups: list[str], k: int, max_chars: int) -> list[str]:
+    """Samakan jumlah grup dengan k: merge pasangan terpendek / split terpanjang."""
+    if not groups:
+        return [""] * k
+    while len(groups) > k:
+        i = min(range(len(groups) - 1), key=lambda j: len(groups[j]) + len(groups[j + 1]))
+        groups[i] = f"{groups[i]} {groups[i + 1]}".strip()
+        del groups[i + 1]
+    while len(groups) < k:
+        i = max(range(len(groups)), key=lambda j: len(groups[j]))
+        g = groups[i]
+        mid = len(g) // 2
+        cut = g.rfind(" ", 1, mid + 1)
+        if cut < 1:
+            cut = g.find(" ", mid)
+        if cut < 1:
+            break
+        groups[i : i + 1] = [g[:cut].strip(), g[cut:].strip()]
+    return groups
+
+
+def split_long_rows(rows: list[dict], max_chars: int = MAX_SUB_CHARS) -> list[dict]:
+    """Pecah baris subtitle yang terlalu panjang jadi beberapa baris sejajar.
+
+    `rows` = [{idx,start,end,text_id,text_en,...}]. Baris dengan text_id atau
+    text_en > max_chars dipecah di batas kalimat; timing diproporsikan menurut
+    jumlah char teks pemandu (yang lebih panjang); teks bahasa lain dipecah
+    paralel jadi k grup yang sama sehingga baris tetap 1:1. idx di-reindex.
+    Baris pendek dikembalikan apa adanya (tidak ada perubahan perilaku).
+    """
+    out: list[dict] = []
+    for r in rows:
+        tid = normalize_text(r.get("text_id"))
+        ten = normalize_text(r.get("text_en"))
+        if max(len(tid), len(ten)) <= max_chars:
+            out.append({**r, "text_id": tid, "text_en": ten})
+            continue
+        en_driver = len(ten) >= len(tid)
+        driver = ten if en_driver else tid
+        other = tid if en_driver else ten
+        grp_dr = _group_capped(_sentence_chunks(driver, max_chars), max_chars)
+        k = min(_MAX_GROUPS, max(2, len(grp_dr)))
+        grp_dr = _fit_count(grp_dr, k, max_chars)
+        grp_ot = _fit_count(
+            _group_capped(_sentence_chunks(other, max_chars), max_chars), k, max_chars
+        )
+        grp_dr += [""] * (k - len(grp_dr))
+        grp_ot += [""] * (k - len(grp_ot))
+        start = float(r["start"])
+        end = float(r["end"])
+        dur = max(0.4, end - start)
+        tot = max(1, sum(len(g) for g in grp_dr))
+        cur = start
+        for i in range(k):
+            e = end if i == k - 1 else round(cur + dur * (len(grp_dr[i]) / tot), 3)
+            nd = dict(r)
+            nd["start"], nd["end"] = round(cur, 3), e
+            if en_driver:
+                nd["text_en"], nd["text_id"] = grp_dr[i], grp_ot[i]
+            else:
+                nd["text_id"], nd["text_en"] = grp_dr[i], grp_ot[i]
+            out.append(nd)
+            cur = e
+    for i, r in enumerate(out):
+        r["idx"] = i
+    return out

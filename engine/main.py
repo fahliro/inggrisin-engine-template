@@ -358,6 +358,49 @@ def run_first(
     )
     id_segs = [s for s in tr.segments if (s.text or "").strip()]
     texts_en = transcribe.align_translation(id_segs, tren.segments)
+
+    # Guard bahasa (docs/01 §32): bila pass sumber degenerat dibanding pass
+    # translate (audio ternyata BUKAN bahasa sumber yang dipaksa — Whisper
+    # wajib-language menghasilkan transkrip halusinasi pendek), ulang transcribe
+    # dengan deteksi otomatis SEBELUM chunk dibersihkan, supaya timing kanonik
+    # dan segmentasi sehat lagi.
+    if transcribe.source_degenerate(tr, tren):
+        _id_chars = sum(len((s.text or "").strip()) for s in tr.segments)
+        _en_chars = sum(len((s.text or "").strip()) for s in tren.segments)
+        log.warn(
+            f"transkrip sumber degenerat: {_id_chars} char vs {_en_chars} char Inggris — "
+            f"audio kemungkinan bukan bahasa '{cfg.source_language}'; "
+            "ulang transcribe dengan deteksi bahasa otomatis"
+        )
+        if chunks:
+            tr_auto = transcribe.transcribe_chunks(
+                log,
+                cfg.groq_api_key,
+                chunks,
+                model=cfg.whisper_model,
+                language=None,
+                task="transcribe",
+            )
+        else:
+            tr_auto = transcribe.transcribe_file(
+                log,
+                cfg.groq_api_key,
+                audio_path,
+                model=cfg.whisper_model,
+                language=None,
+                task="transcribe",
+            )
+        if tr_auto.text.strip() and not transcribe.source_degenerate(tr_auto, tren):
+            log.warn(
+                f"transkrip auto-detect dipakai: language={tr_auto.language}, "
+                f"{len(tr_auto.segments)} segmen"
+            )
+            tr = tr_auto
+            id_segs = [s for s in tr.segments if (s.text or "").strip()]
+            texts_en = transcribe.align_translation(id_segs, tren.segments)
+        else:
+            log.warn("transkrip auto-detect juga degenerat — pertahankan hasil semula")
+
     shutil.rmtree(cfg.chunks_dir, ignore_errors=True)
     timings["translate_s"] = round(time.monotonic() - t, 2)
     empty = sum(1 for x in texts_en if not x)
@@ -371,27 +414,37 @@ def run_first(
     if not tren.text.strip() or empty == len(id_segs):
         raise RuntimeError("Terjemahan Whisper kosong — tidak ada teks Inggris yang dihasilkan")
 
+    # baris subtitle: pecah yang terlalu panjang demi keterbacaan (docs/01 §32)
+    rows = [
+        {"idx": i, "start": s.start, "end": s.end, "text_id": s.text, "text_en": texts_en[i]}
+        for i, s in enumerate(id_segs)
+    ]
+    n_rows = len(rows)
+    rows = srt.split_long_rows(rows)
+    if len(rows) != n_rows:
+        log.warn(f"subtitle dipecah demi keterbacaan: {n_rows} → {len(rows)} baris")
+
     # manifest = sumber kebenaran timing, dikunci mulai sekarang
     manifest = {
         "jobId": cfg.job_id,
         "durationSeconds": round(total_duration, 3),
         "sourceAspect": aspect,
-        "segments": [{"idx": i, "start": s.start, "end": s.end} for i, s in enumerate(id_segs)],
+        "segments": [{"idx": r["idx"], "start": r["start"], "end": r["end"]} for r in rows],
     }
     cfg.manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
     segs = [
         {
-            "idx": i,
-            "start": s.start,
-            "end": s.end,
-            "text_id": s.text,
-            "text_en": texts_en[i],
+            "idx": r["idx"],
+            "start": r["start"],
+            "end": r["end"],
+            "text_id": r["text_id"],
+            "text_en": r["text_en"],
             "fit": "ok",
             "tempo": 1.0,
             "note": "",
         }
-        for i, s in enumerate(id_segs)
+        for r in rows
     ]
     _tts_to_render(cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref)
     res = _upload(cfg, log, prog, report, timings)

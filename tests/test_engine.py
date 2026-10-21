@@ -815,7 +815,9 @@ def test_transcribe_file_task_translate_pakai_endpoint_translations(monkeypatch,
     )
     assert captured["url"].endswith("/audio/translations")
     assert "language" not in captured["data"]  # endpoint translate tak menerima language
-    assert "timestamp_granularities[]" not in captured["data"]  # transcriptions-only (400 bila dikirim)
+    assert (
+        "timestamp_granularities[]" not in captured["data"]
+    )  # transcriptions-only (400 bila dikirim)
     assert tr.segments[0].text == "Hello there"
 
 
@@ -878,3 +880,93 @@ def test_translate_json_retry_dengan_backoff(monkeypatch):
     res = translate.translate(LOG, "k", _segs(), "m")
     assert calls == ["translate", "translate", "translate"]
     assert res.segments[0].text_en == "Hi everyone"
+
+
+# ---------------------------------------------------------------------------
+# §32 — guard degenerasi bahasa + pemecahan baris panjang
+# ---------------------------------------------------------------------------
+def _tr(segs: list[tuple[float, float, str]]) -> transcribe_mod.Transcript:
+    return transcribe_mod.Transcript(
+        text=" ".join(t for _, _, t in segs),
+        language="id",
+        duration_s=segs[-1][1] if segs else 0.0,
+        segments=[transcribe_mod.Segment(start=a, end=b, text=t) for a, b, t in segs],
+    )
+
+
+def test_source_degenerate_mendeteksi_mismatch_bahasa():
+    # kasus nyata job_t5zERPmDIF2Z2Rpw: transcribe(id) 13 char vs translate 169 char
+    id_tr = _tr([(0.0, 10.0, "Terima kasih.")])
+    en_tr = _tr(
+        [
+            (0.0, 2.0, "Why are there so many parents here?"),
+            (2.0, 4.0, "The children are struggling."),
+            (4.0, 6.0, "Wow, this is so hard."),
+            (6.0, 8.0, "It turns out that what they need, kindness, is spreading."),
+            (8.0, 10.0, "Just start and continue."),
+        ]
+    )
+    assert transcribe_mod.source_degenerate(id_tr, en_tr) is True
+    # pass sehat: char seimbang → tidak degenerat
+    id_ok = _tr([(0.0, 5.0, "Akhirnya sampai juga."), (5.0, 10.0, "Keliatannya tenang banget ya.")])
+    en_ok = _tr([(0.0, 5.0, "Finally made it."), (5.0, 10.0, "Looks really chill.")])
+    assert transcribe_mod.source_degenerate(id_ok, en_ok) is False
+    # teks Inggris kecil → jangan menilai (hindari false positive)
+    assert transcribe_mod.source_degenerate(_tr([]), _tr([(0.0, 2.0, "Hello there.")])) is False
+
+
+def test_split_long_rows_memecah_dinding_teks():
+    wall = (
+        "Why are there so many parents here? The children are struggling. "
+        "Wow, this is so hard. It turns out that what they need, kindness, is "
+        "spreading. Just start and continue."
+    )
+    rows = [{"idx": 0, "start": 0.0, "end": 10.0, "text_id": "Terima kasih.", "text_en": wall}]
+    out = srt.split_long_rows(rows)
+    assert len(out) >= 2
+    # timing kontigu: start pertama & end terakhir utuh, tanpa celah/overlap
+    assert out[0]["start"] == 0.0
+    assert out[-1]["end"] == 10.0
+    for a, b in zip(out, out[1:], strict=False):
+        assert a["end"] == b["start"]
+    # idx di-reindex urut
+    assert [r["idx"] for r in out] == list(range(len(out)))
+    # seluruh kalimat sumber tetap ada (tidak ada yang terbuang)
+    joined = " ".join(r["text_en"] for r in out)
+    for sentence in ("The children are struggling.", "Just start and continue."):
+        assert sentence in joined
+    # tiap baris hasil ≤ batas keterbacaan
+    for r in out:
+        assert len(r["text_en"]) <= srt.MAX_SUB_CHARS
+
+
+def test_split_long_rows_baris_pendek_tidak_disentuh():
+    rows = [
+        {
+            "idx": 0,
+            "start": 0.0,
+            "end": 2.0,
+            "text_id": "Akhirnya sampai juga.",
+            "text_en": "Finally made it.",
+        },
+        {"idx": 1, "start": 2.0, "end": 4.0, "text_id": "Kasian juga.", "text_en": "Poor thing."},
+    ]
+    out = srt.split_long_rows(rows)
+    assert out == rows
+
+
+def test_split_long_rows_teks_sumber_yang_panjang_juga_dipecah():
+    panjang_id = "Narasi panjang tanpa titik yang harus dipecah " * 4
+    rows = [
+        {
+            "idx": 0,
+            "start": 0.0,
+            "end": 20.0,
+            "text_id": panjang_id.strip(),
+            "text_en": "Short line.",
+        }
+    ]
+    out = srt.split_long_rows(rows)
+    assert len(out) >= 2
+    for r in out:
+        assert len(r["text_id"]) <= srt.MAX_SUB_CHARS

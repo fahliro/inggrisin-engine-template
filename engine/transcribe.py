@@ -360,3 +360,29 @@ def align_translation(id_segments: list[Segment], en_segments: list[Segment]) ->
             )
             out[i] = (en_segments[j].text or "").strip()
     return out
+
+
+def source_degenerate(
+    id_tr: Transcript,
+    en_tr: Transcript,
+    ratio: float = 0.35,
+    min_en_chars: int = 60,
+) -> bool:
+    """True bila pass sumber "mendengar" JAUH lebih sedikit daripada pass translate.
+
+    Indikasi bahasa audio ≠ bahasa sumber yang dipaksa (docs/01 §32): Whisper
+    yang dipaksa `language=id` atas ucapan bahasa lain menghasilkan transkrip
+    degenerat (sedikit segmen/char, kadang halusinasi pendek), sementara
+    /audio/translations tetap sehat karena memang mendengar bahasa aslinya.
+    Tanpa guard ini, align_translation menumpuk SELURUH teks Inggris ke satu
+    slot sumber → satu baris subtitle raksasa.
+    """
+    id_chars = sum(len((s.text or "").strip()) for s in id_tr.segments) or len(
+        (id_tr.text or "").strip()
+    )
+    en_chars = sum(len((s.text or "").strip()) for s in en_tr.segments) or len(
+        (en_tr.text or "").strip()
+    )
+    if en_chars < min_en_chars:
+        return False
+    return id_chars < ratio * en_chars
