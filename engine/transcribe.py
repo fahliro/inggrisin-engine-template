@@ -321,16 +321,19 @@ def _safe_detail(r: requests.Response) -> str:
 def align_translation(id_segments: list[Segment], en_segments: list[Segment]) -> list[str]:
     """Petakan hasil translate Whisper (timing-nya SENDIRI) ke segmen transkrip asli.
 
-    docs/01 §29: timing kanonik = transkrip bahasa sumber (manifest); teks
-    Inggris datang dari pass translate yang segmentasinya bisa berbeda (Whisper
-    memecah/menggabung kalimat bebas). Algoritma deterministik:
-      1. tiap segmen Inggris masuk ke segmen asli dengan OVERLAP waktu terbesar
-         (satu segmen Inggris hanya masuk satu slot → tidak ada duplikasi;
-         beberapa segmen Inggris di slot yang sama digabung urut waktu),
-      2. slot asli yang masih kosong diisi teks segmen Inggris ber-pusat waktu
-         terdekat (jarang; dicatat pemanggil).
-    Return: list teks Inggris SEJAJAR indeks id_segments (mungkin "" bila
-    en_segments kosong).
+    docs/01 §29/§34: timing kanonik = transkrip bahasa sumber (manifest).
+    Pada audio PANJANG pass translate menghasilkan segmen JAUH lebih kasar
+    daripada transcribe (satu kalimat Inggris bisa membentang di atas beberapa
+    slot asli). Algoritma lama menumpuk seluruh teks ke satu slot terbaik lalu
+    mengisi slot kosong dengan teks slot terdekat → baris DUPLIKAT dan TTS
+    mengetim dobel (insiden job_GbFcCQT41RZ5WeL4: 48 baris duplikat, 141 baris
+    over-budget, audio bertabrakan).
+
+    v2: segmen Inggris DISEBAR proporsional ke semua slot asli yang overlap
+    dengannya — kata-kata dibagi menurut porsi waktu overlap, sehingga tiap
+    slot mendapat fragmen miliknya sendiri (sinkron dengan jendela waktunya)
+    dan tidak ada duplikasi. Perilaku 1:1 untuk video pendek tidak berubah
+    (overlap tunggal → teks utuh ke slot itu).
     """
     out = [""] * len(id_segments)
     if not id_segments or not en_segments:
@@ -343,19 +346,43 @@ def align_translation(id_segments: list[Segment], en_segments: list[Segment]) ->
         text = (e.text or "").strip()
         if not text:
             continue
-        best, best_ov = -1, 0.0
+        overlaps: list[tuple[int, float]] = []
         for i, s in enumerate(id_segments):
             ov = min(e.end, s.end) - max(e.start, s.start)
-            if ov > best_ov:
-                best, best_ov = i, ov
-        if best < 0:
+            if ov > 0:
+                overlaps.append((i, ov))
+        if not overlaps:
             # tidak ada overlap sama sekali → pusat waktu terdekat
             ce = _center(e.start, e.end)
             best = min(
                 range(len(id_segments)),
                 key=lambda i: abs(_center(id_segments[i].start, id_segments[i].end) - ce),
             )
-        out[best] = f"{out[best]} {text}".strip() if out[best] else text
+            out[best] = f"{out[best]} {text}".strip() if out[best] else text
+            continue
+        if len(overlaps) == 1:
+            i = overlaps[0][0]
+            out[i] = f"{out[i]} {text}".strip() if out[i] else text
+            continue
+        words = text.split()
+        total_ov = sum(ov for _, ov in overlaps)
+        if len(words) < 2 or total_ov <= 0:
+            i = max(overlaps, key=lambda t: t[1])[0]
+            out[i] = f"{out[i]} {text}".strip() if out[i] else text
+            continue
+        # sebar kata proporsional terhadap porsi waktu overlap per slot
+        cursor = 0
+        for k, (i, ov) in enumerate(overlaps):
+            if k == len(overlaps) - 1:
+                take = len(words) - cursor
+            else:
+                take = round(len(words) * ov / total_ov)
+                take = max(0, min(take, len(words) - cursor))
+            frag = " ".join(words[cursor : cursor + take])
+            cursor += take
+            if not frag:
+                continue
+            out[i] = f"{out[i]} {frag}".strip() if out[i] else frag
 
     for i, s in enumerate(id_segments):
         if not out[i]:

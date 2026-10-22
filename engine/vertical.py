@@ -12,6 +12,7 @@ Aturan keras (docs/00 §7, docs/01 §15):
 
 Fungsi pembangun command dipisah dari eksekusi supaya bisa diuji tanpa ffmpeg.
 """
+
 from __future__ import annotations
 
 import json
@@ -45,8 +46,14 @@ class VideoProbe:
 
 def probe_video(log: Logger, path: Path) -> VideoProbe:
     cmd = [
-        "ffprobe", "-v", "error", "-print_format", "json",
-        "-show_streams", "-show_format", str(path),
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_streams",
+        "-show_format",
+        str(path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
@@ -79,6 +86,7 @@ def classify_aspect(width: int, height: int) -> str:
 # ASS (posisi subtitle presisi: MarginV = 19% tinggi — di atas safe zone)
 # ---------------------------------------------------------------------------
 
+
 def ass_time(seconds: float) -> str:
     """Format waktu ASS: H:MM:SS.cc (centisecond)."""
     cs = max(0, round(seconds * 100))
@@ -104,15 +112,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
 
-def build_ass(cues: list[Cue], out: Path, *, w: int = TARGET_W, h: int = TARGET_H,
-              bottom_pct: int = SUBTITLE_BOTTOM_PCT, font_size: int = FONT_SIZE) -> Path:
+def build_ass(
+    cues: list[Cue],
+    out: Path,
+    *,
+    w: int = TARGET_W,
+    h: int = TARGET_H,
+    bottom_pct: int = SUBTITLE_BOTTOM_PCT,
+    font_size: int = FONT_SIZE,
+) -> Path:
     margin_v = round(h * bottom_pct / 100)
     parts = [_ASS_HEADER.format(w=w, h=h, fs=font_size, mv=margin_v)]
     for c in cues:
         text = sanitize_for_burn(c.text).replace("\n", "\\N")
-        parts.append(
-            f"Dialogue: 0,{ass_time(c.start)},{ass_time(c.end)},Default,,0,0,0,,{text}\n"
-        )
+        parts.append(f"Dialogue: 0,{ass_time(c.start)},{ass_time(c.end)},Default,,0,0,0,,{text}\n")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("".join(parts), encoding="utf-8")
     return out
@@ -121,6 +134,7 @@ def build_ass(cues: list[Cue], out: Path, *, w: int = TARGET_W, h: int = TARGET_
 # ---------------------------------------------------------------------------
 # Render satu pass
 # ---------------------------------------------------------------------------
+
 
 def _escape_filter_path(p: Path) -> str:
     """Escape path untuk dipakai di filter subtitles='...' ffmpeg (Linux)."""
@@ -142,6 +156,18 @@ def build_render_cmd(
     fps: int = TARGET_FPS,
     crf: int = 20,
 ) -> list[str]:
+    # Tier bitrate menurut durasi (docs/01 §34): CRF 20 polos membuat file
+    # 10+ menit membengkak (126 MB utk sumber 35 MB — upscaling sumber 360p
+    # ke 1080x1920 tidak butuh bitrate besar). Untuk video panjang: CRF lebih
+    # tinggi + maxrate/bufsize sebagai plafon, audio 96k cukup utk suara orang.
+    if crf == 20 and duration_s > 300:
+        crf = 23
+        maxrate, bufsize, audio_k = "800k", "1600k", "96k"
+    elif crf == 20 and duration_s > 120:
+        crf = 21
+        maxrate, bufsize, audio_k = "1500k", "3000k", "128k"
+    else:
+        maxrate, bufsize, audio_k = "2500k", "5000k", "192k"
     sub = f"subtitles='{_escape_filter_path(ass)}'"
     if aspect in ("horizontal", "square", "unknown"):
         # latar blur: split → latar diperbesar+d crop+blur, subjek di tengah
@@ -158,27 +184,60 @@ def build_render_cmd(
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,{sub}[vout]"
         )
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(src),
-        "-i", str(voice_wav),
-        "-filter_complex", fc,
-        "-map", "[vout]", "-map", "1:a:0",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-        "-pix_fmt", "yuv420p", "-r", str(fps),
-        "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-        "-t", f"{max(0.1, duration_s):.3f}",
-        "-movflags", "+faststart",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(src),
+        "-i",
+        str(voice_wav),
+        "-filter_complex",
+        fc,
+        "-map",
+        "[vout]",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        str(crf),
+        "-maxrate",
+        maxrate,
+        "-bufsize",
+        bufsize,
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        str(fps),
+        "-c:a",
+        "aac",
+        "-b:a",
+        audio_k,
+        "-ar",
+        "44100",
+        "-t",
+        f"{max(0.1, duration_s):.3f}",
+        "-movflags",
+        "+faststart",
         str(out),
     ]
 
 
 def render(log: Logger, cmd: list[str]) -> Path:
     out = Path(cmd[-1])
-    log.info(f"render satu pass → {out.name} (filter_complex {len(cmd[cmd.index('-filter_complex') + 1])} chars)")
+    log.info(
+        f"render satu pass → {out.name} (filter_complex {len(cmd[cmd.index('-filter_complex') + 1])} chars)"
+    )
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         tail = "\n".join((proc.stderr or "").strip().splitlines()[-12:])
-        raise VerticalError("vertical_render_failed", f"ffmpeg render gagal (exit {proc.returncode}):\n{tail}")
+        raise VerticalError(
+            "vertical_render_failed", f"ffmpeg render gagal (exit {proc.returncode}):\n{tail}"
+        )
     if not out.exists() or out.stat().st_size == 0:
         raise VerticalError("vertical_render_failed", "hasil render kosong")
     return out

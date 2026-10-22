@@ -1170,3 +1170,110 @@ def test_progress_heartbeat_mengirim_berkala():
     with p.heartbeat("synthesizing", "msg", every=0.05):
         _t.sleep(0.18)
     assert len(sent) >= 2
+
+
+def test_align_v2_sebar_kata_proporsional_tanpa_duplikat():
+    id_segs = [
+        transcribe_mod.Segment(start=0.0, end=2.0, text="a"),
+        transcribe_mod.Segment(start=2.0, end=4.0, text="b"),
+        transcribe_mod.Segment(start=4.0, end=6.0, text="c"),
+    ]
+    en_segs = [
+        transcribe_mod.Segment(
+            start=0.0, end=6.0, text="one two three four five six seven eight nine"
+        )
+    ]
+    out = transcribe_mod.align_translation(id_segs, en_segs)
+    # tiga slot terisi fragmen BERBEDA (tidak ada duplikasi)
+    assert len(set(out)) == 3
+    assert all(out), out
+    # gabungan fragmen = teks asli (urutan terjaga)
+    assert " ".join(out) == "one two three four five six seven eight nine"
+
+
+def test_align_v2_satu_slot_tetap_utuh():
+    id_segs = [transcribe_mod.Segment(start=0.0, end=2.0, text="a")]
+    en_segs = [transcribe_mod.Segment(start=0.0, end=2.0, text="Hello there friend")]
+    out = transcribe_mod.align_translation(id_segs, en_segs)
+    assert out == ["Hello there friend"]
+
+
+def test_vertical_bitrate_tier_video_panjang(tmp_path):
+    from engine import vertical
+
+    cmd_long = vertical.build_render_cmd(
+        tmp_path / "s.mp4",
+        tmp_path / "v.wav",
+        tmp_path / "x.ass",
+        tmp_path / "o.mp4",
+        "horizontal",
+        duration_s=678.0,
+    )
+    assert "800k" in cmd_long and "96k" in cmd_long
+    cmd_short = vertical.build_render_cmd(
+        tmp_path / "s.mp4",
+        tmp_path / "v.wav",
+        tmp_path / "x.ass",
+        tmp_path / "o.mp4",
+        "horizontal",
+        duration_s=30.0,
+    )
+    assert "2500k" in cmd_short and "192k" in cmd_short
+
+
+def test_align_translation_sebar_proporsional_tanpa_duplikat():
+    id_segs = [
+        transcribe_mod.Segment(start=0.0, end=2.0, text="a"),
+        transcribe_mod.Segment(start=2.0, end=4.0, text="b"),
+        transcribe_mod.Segment(start=4.0, end=6.0, text="c"),
+    ]
+    en_segs = [
+        transcribe_mod.Segment(
+            start=0.0,
+            end=6.0,
+            text="one two three four five six seven eight nine ten eleven twelve",
+        )
+    ]
+    out = transcribe_mod.align_translation(id_segs, en_segs)
+    # tiap slot dapat fragmen sendiri — tidak ada duplikasi, tidak ada kosong
+    assert all(t for t in out), out
+    assert len(set(out)) == 3
+    # gabungan fragmen = teks asli utuh, urut
+    assert " ".join(out) == "one two three four five six seven eight nine ten eleven twelve"
+    # proporsional: porsi waktu sama → porsi kata sama (4-4-4)
+    assert [len(t.split()) for t in out] == [4, 4, 4]
+
+
+def test_align_translation_segmen_pendek_tetap_utuh():
+    id_segs = [
+        transcribe_mod.Segment(start=0.0, end=2.0, text="a"),
+        transcribe_mod.Segment(start=2.0, end=4.0, text="b"),
+    ]
+    en_segs = [
+        transcribe_mod.Segment(start=0.0, end=1.9, text="First line."),
+        transcribe_mod.Segment(start=2.1, end=4.0, text="Second line."),
+    ]
+    out = transcribe_mod.align_translation(id_segs, en_segs)
+    assert out == ["First line.", "Second line."]
+
+
+def test_vertical_cmd_tier_bitrate_durasi(tmp_path):
+    from engine import vertical
+
+    args = dict(
+        src=tmp_path / "s.mp4",
+        voice_wav=tmp_path / "v.wav",
+        ass=tmp_path / "x.ass",
+        out=tmp_path / "o.mp4",
+        aspect="horizontal",
+    )
+    short = vertical.build_render_cmd(**args, duration_s=60)
+    long_ = vertical.build_render_cmd(**args, duration_s=700)
+    assert "-maxrate" in short and "-maxrate" in long_
+    i = long_.index("-maxrate")
+    assert long_[i + 1] == "800k"
+    j = short.index("-maxrate")
+    assert short[j + 1] == "2500k"
+    # audio: panjang 96k, pendek 192k
+    assert long_[long_.index("-b:a") + 1] == "96k"
+    assert short[short.index("-b:a") + 1] == "192k"
