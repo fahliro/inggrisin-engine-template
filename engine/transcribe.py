@@ -12,6 +12,11 @@ lalu digabung dengan OFFSET WAKU. Offset dihitung dari durasi chunk sebelumnya
 
 Retry: hanya untuk 429/5xx, dengan exponential backoff + jitter. 401/400
 tidak di-retry (buang waktu & kuota user).
+
+docs/01 §36: build pertama memakai SATU pass (transcribe) — terjemahan Inggris
+lahir 1:1 dari segmen transkrip via groq_llm (gpt-oss). Plumbing task="translate"
+(/audio/translations) DIPERTAHANKAN tapi dorman, dan align lintas-pass dihapus:
+dengan teks 1:1 tidak ada lagi dua segmentasi yang harus didamaikan.
 """
 
 from __future__ import annotations
@@ -27,12 +32,15 @@ from .audio import probe
 from .log import Logger
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-# Terjemahan LANGSUNG audio → Inggris (docs/01 §29). CATATAN: hanya didukung
-# `whisper-large-v3` (BUKAN -turbo — tabel dukungan Groq: Translation=No).
+# DORMAN sejak §36 (build pertama tidak lagi memanggil /audio/translations).
+# Catatan sejarah §29: hanya didukung `whisper-large-v3` (BUKAN -turbo).
 GROQ_TRANSLATE_URL = "https://api.groq.com/openai/v1/audio/translations"
 MAX_RETRIES = 4
 # batas yang kita pakai sendiri (paling ketat) — lihat audio.TARGET_AUDIO_BYTES
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+# guard degenerasi single-pass (§36) — lihat transcript_degenerate
+DEGENERATE_MIN_CHARS = 24
+DEGENERATE_MIN_DUR_S = 8.0
 
 
 class TranscribeError(Exception):
@@ -318,113 +326,30 @@ def _safe_detail(r: requests.Response) -> str:
         return (r.text or "")[:300]
 
 
-def align_translation(id_segments: list[Segment], en_segments: list[Segment]) -> list[str]:
-    """Petakan hasil translate Whisper (timing-nya SENDIRI) ke segmen transkrip asli.
+def transcript_degenerate(tr: Transcript, duration_s: float) -> bool:
+    """Heuristik transkrip degenerat untuk arsitektur SATU pass (docs/01 §36).
 
-    docs/01 §29/§34: timing kanonik = transkrip bahasa sumber (manifest).
-    Pada audio PANJANG pass translate menghasilkan segmen JAUH lebih kasar
-    daripada transcribe (satu kalimat Inggris bisa membentang di atas beberapa
-    slot asli). Algoritma lama menumpuk seluruh teks ke satu slot terbaik lalu
-    mengisi slot kosong dengan teks slot terdekat → baris DUPLIKAT dan TTS
-    mengetim dobel (insiden job_GbFcCQT41RZ5WeL4: 48 baris duplikat, 141 baris
-    over-budget, audio bertabrakan).
-
-    v2: segmen Inggris DISEBAR proporsional ke semua slot asli yang overlap
-    dengannya — kata-kata dibagi menurut porsi waktu overlap, sehingga tiap
-    slot mendapat fragmen miliknya sendiri (sinkron dengan jendela waktunya)
-    dan tidak ada duplikasi. Perilaku 1:1 untuk video pendek tidak berubah
-    (overlap tunggal → teks utuh ke slot itu).
+    Tanpa pass translate tidak ada "telinga kedua" untuk saling memeriksa
+    (§32 v2 punah). Sisa sinyal: keyakinan ucapan (no_speech_prob) + volume
+    teks. Kasus nyata §32: audio 10 detik berisi 5 kalimat riil (conf 0.24)
+    tetapi decoder Groq terkunci mengembalikan "Terima kasih." (13 char).
+    Ambang 24 char utk audio >= 8 detik: ucapan sah yang jarang (mis. 30 char
+    per menit) TIDAK kena; kunci-decoder nyaris kosong kena. Audio pendek
+    (< 8 detik) dan yang tidak meyakinkan sebagai ucapan (conf >= 0.5) bukan
+    urusan guard ini — kasus musik/keheningan gagal di pemeriksaan teks kosong.
     """
-    out = [""] * len(id_segments)
-    if not id_segments or not en_segments:
-        return out
-
-    def _center(a: float, b: float) -> float:
-        return (a + b) / 2.0
-
-    for e in en_segments:
-        text = (e.text or "").strip()
-        if not text:
-            continue
-        overlaps: list[tuple[int, float]] = []
-        for i, s in enumerate(id_segments):
-            ov = min(e.end, s.end) - max(e.start, s.start)
-            if ov > 0:
-                overlaps.append((i, ov))
-        if not overlaps:
-            # tidak ada overlap sama sekali → pusat waktu terdekat
-            ce = _center(e.start, e.end)
-            best = min(
-                range(len(id_segments)),
-                key=lambda i: abs(_center(id_segments[i].start, id_segments[i].end) - ce),
-            )
-            out[best] = f"{out[best]} {text}".strip() if out[best] else text
-            continue
-        if len(overlaps) == 1:
-            i = overlaps[0][0]
-            out[i] = f"{out[i]} {text}".strip() if out[i] else text
-            continue
-        words = text.split()
-        total_ov = sum(ov for _, ov in overlaps)
-        if len(words) < 2 or total_ov <= 0:
-            i = max(overlaps, key=lambda t: t[1])[0]
-            out[i] = f"{out[i]} {text}".strip() if out[i] else text
-            continue
-        # sebar kata proporsional terhadap porsi waktu overlap per slot
-        cursor = 0
-        for k, (i, ov) in enumerate(overlaps):
-            if k == len(overlaps) - 1:
-                take = len(words) - cursor
-            else:
-                take = round(len(words) * ov / total_ov)
-                take = max(0, min(take, len(words) - cursor))
-            frag = " ".join(words[cursor : cursor + take])
-            cursor += take
-            if not frag:
-                continue
-            out[i] = f"{out[i]} {frag}".strip() if out[i] else frag
-
-    for i, s in enumerate(id_segments):
-        if not out[i]:
-            cs = _center(s.start, s.end)
-            j = min(
-                range(len(en_segments)),
-                key=lambda k: abs(_center(en_segments[k].start, en_segments[k].end) - cs),
-            )
-            out[i] = (en_segments[j].text or "").strip()
-    return out
-
-
-def source_degenerate(
-    id_tr: Transcript,
-    en_tr: Transcript,
-    ratio: float = 0.35,
-    min_en_chars: int = 60,
-) -> bool:
-    """True bila pass sumber "mendengar" JAUH lebih sedikit daripada pass translate.
-
-    Indikasi bahasa audio ≠ bahasa sumber yang dipaksa (docs/01 §32): Whisper
-    yang dipaksa `language=id` atas ucapan bahasa lain menghasilkan transkrip
-    degenerat (sedikit segmen/char, kadang halusinasi pendek), sementara
-    /audio/translations tetap sehat karena memang mendengar bahasa aslinya.
-    Tanpa guard ini, align_translation menumpuk SELURUH teks Inggris ke satu
-    slot sumber → satu baris subtitle raksasa.
-    """
-    id_chars = sum(len((s.text or "").strip()) for s in id_tr.segments) or len(
-        (id_tr.text or "").strip()
-    )
-    en_chars = sum(len((s.text or "").strip()) for s in en_tr.segments) or len(
-        (en_tr.text or "").strip()
-    )
-    if en_chars < min_en_chars:
+    if duration_s < DEGENERATE_MIN_DUR_S:
         return False
-    return id_chars < ratio * en_chars
+    conf = speech_confidence(tr)
+    if conf is not None and conf >= 0.5:
+        return False
+    return len((tr.text or "").strip()) < DEGENERATE_MIN_CHARS
 
 
 def speech_confidence(tr: Transcript) -> float | None:
     """Rata-rata no_speech_prob segmen (0=yakin ucapan, 1=yakin bukan ucapan).
 
-    None bila provider tidak mengirim metriknya. Pelengkap source_degenerate:
+    None bila provider tidak mengirim metriknya. Dipakai transcript_degenerate:
     halusinasi Whisper atas BGM/keheningan biasanya ber-no_speech_prob tinggi,
     sementara ucapan riil rendah (kasus nyata §32: riil ≈ 0.24).
     """

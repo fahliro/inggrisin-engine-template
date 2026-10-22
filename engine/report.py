@@ -8,6 +8,7 @@ mati mendadak, report terakhir tetap berguna untuk diagnosis.
 PENTING: jangan pernah menulis secret ke report. Field yang bisa memuat
 nilai sensitif (URL dengan token, api key) disanitasi lewat log.sanitize().
 """
+
 from __future__ import annotations
 
 import json
@@ -72,4 +73,6 @@ class Report:
 
     @property
     def timings(self) -> dict[str, float]:
-        return {f"{k}_s": float(v.get("seconds", 0.0)) for k, v in self._data.get("stages", {}).items()}
+        return {
+            f"{k}_s": float(v.get("seconds", 0.0)) for k, v in self._data.get("stages", {}).items()
+        }

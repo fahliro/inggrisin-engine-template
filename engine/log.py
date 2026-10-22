@@ -10,6 +10,7 @@ Dua aturan yang tidak boleh dilanggar:
 Selain ke stdout, log juga ditulis ke file yang di-upload sebagai artifact
 debug (retention 3 hari).
 """
+
 from __future__ import annotations
 
 import re

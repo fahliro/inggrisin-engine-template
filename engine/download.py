@@ -10,6 +10,7 @@ Yang dilakukan modul ini:
   - verifikasi ukuran & sha256 bila app mengirimnya
   - retry dengan backoff untuk error jaringan transient
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -71,7 +72,9 @@ def download(
             log.info(f"retry download dalam {wait}s")
             time.sleep(wait)
 
-    raise DownloadError("source_download_failed", f"download gagal setelah {MAX_RETRIES} percobaan: {last_err}")
+    raise DownloadError(
+        "source_download_failed", f"download gagal setelah {MAX_RETRIES} percobaan: {last_err}"
+    )
 
 
 def _attempt(
@@ -94,9 +97,13 @@ def _attempt(
                 "Link sumber tidak ditemukan atau sudah dipakai (sekali pakai). Jalankan ulang job dari dashboard.",
             )
         if r.status_code == 410:
-            raise DownloadError("source_download_failed", "Link sumber kadaluarsa. Jalankan ulang job.")
+            raise DownloadError(
+                "source_download_failed", "Link sumber kadaluarsa. Jalankan ulang job."
+            )
         if r.status_code >= 400:
-            raise DownloadError("source_download_failed", f"Proxy mengembalikan HTTP {r.status_code}")
+            raise DownloadError(
+                "source_download_failed", f"Proxy mengembalikan HTTP {r.status_code}"
+            )
 
         content_type = r.headers.get("content-type")
         declared = r.headers.get("content-length")
@@ -128,7 +135,9 @@ def _attempt(
     digest = sha.hexdigest()
     if expected_sha256 and digest != expected_sha256.lower():
         tmp.unlink(missing_ok=True)
-        raise DownloadError("source_download_failed", "Checksum sha256 tidak cocok — file korup saat transfer")
+        raise DownloadError(
+            "source_download_failed", "Checksum sha256 tidak cocok — file korup saat transfer"
+        )
 
     tmp.replace(dest)
     elapsed = time.monotonic() - t0

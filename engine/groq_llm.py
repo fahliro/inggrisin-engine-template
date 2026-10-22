@@ -1,12 +1,19 @@
 """
-groq_llm.py — terjemahan fallback via Groq chat completion (gpt-oss-20b).
+groq_llm.py — terjemahan Inggris via Groq chat completion (gpt-oss).
 
-Hanya dipakai bila dua pass Whisper bertentangan DAN pass sumber yang menang
-(docs/01 §32): /audio/translations bisa BERHALUSINASI teks Inggris panjang di
-atas BGM/keheningan, sementara transcribe (forced-id maupun auto-detect)
-sepakat ucapannya pendek. Mempublikasikan halusinasi = subtitle dinding teks
-yang tidak mengucapkan apa pun — maka teks sumber diterjemahkan via LLM:
-murah, deterministik (temperature rendah), kunci Groq user yang sama (BYOK).
+docs/01 §36: arsitektur build pertama = Whisper 1× (transcribe → teks sumber +
+timing kanonik) + gpt-oss (terjemah 1:1 per segmen). LLM bukan lagi fallback
+(§32) melainkan PENERJEMAH PRIMER: text_en lahir langsung dari segmen sumber,
+sehingga align lintas-pass (§29/§34) punah dan baris duplikat mustahil by
+construction.
+
+Ketahanan (cermin §31 di Worker):
+  - rantai model: gpt-oss-120b → gpt-oss-20b (404 / model tidak tersedia);
+  - video panjang: segmen di-chunk ≤60 segmen / ≤10K char; antar-chunk diberi
+    konteks 3 baris terakhir agar istilah & nada konsisten;
+  - 429 per-menit → hormati header retry-after, fallback backoff + jitter;
+  - 429 kuota HARIAN → fail-fast `groq_daily_quota` (nol retry sia-sia);
+  - 400 param ditolak → relaksasi 2 tahap (reasoning_effort, response_format).
 
 Kontrak: output 1:1 per idx (timing manifest tidak disentuh — docs/00 §6).
 Kegagalan LLM = pengecualian (pemanggil memutuskan gagal job — docs/01 §22).
@@ -17,6 +24,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -24,9 +32,12 @@ import requests
 from .log import Logger
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "openai/gpt-oss-20b"
+MODEL_PRIMARY = "openai/gpt-oss-120b"
+MODEL_FALLBACK = "openai/gpt-oss-20b"
 MAX_RETRIES = 4
-MAX_CHARS_PER_CALL = 12_000  # satu panggilan; di atas ini caller wajib gagal jelas
+MAX_SEGS_PER_CHUNK = 60
+MAX_CHARS_PER_CHUNK = 10_000
+CONTEXT_LINES = 3  # baris terjemahan sebelumnya dikirim sebagai konteks chunk
 
 
 class GroqLlmError(Exception):
@@ -36,10 +47,11 @@ class GroqLlmError(Exception):
         self.message = message
 
 
-def _backoff(log: Logger, attempt: int, reason: str) -> None:
-    wait = 2.0**attempt + random.uniform(0, 1.0)
+def _backoff(log: Logger, attempt: int, reason: str, wait: float | None = None) -> None:
+    if wait is None:
+        wait = 2.0**attempt + random.uniform(0, 1.0)
     log.warn(f"groq_llm: {reason} — retry {attempt}/{MAX_RETRIES} dalam {wait:.1f}s")
-    time.sleep(min(wait, 30.0))
+    time.sleep(min(wait, 60.0))
 
 
 _SYSTEM_EN = "\n".join(
@@ -47,7 +59,10 @@ _SYSTEM_EN = "\n".join(
         "You are a subtitle translator for dubbed videos (Indonesian → English).",
         "RULES:",
         "- Output ONLY English, natural spoken style.",
-        "- Translate EVERY segment 1:1. Keep the given idx. Never split or merge.",
+        "- The segments are CONSECUTIVE subtitle lines from one video; a segment may",
+        "  start or end mid-sentence. Keep terminology and tone consistent.",
+        "- Translate EVERY segment 1:1. Keep the given idx. Never split, merge, drop,",
+        "  or repeat a segment.",
         "- Each translation MUST fit its character budget (max chars, spaces included).",
         '- Return STRICT JSON only: {"segments":[{"idx":<int>,"text_en":"<string>"}]}.',
     ]
@@ -64,28 +79,78 @@ _SYSTEM_ID = "\n".join(
 )
 
 
+def _chunk_items(items: list[tuple[int, str, int]]) -> list[list[tuple[int, str, int]]]:
+    """Pecah berurutan jadi chunk ≤ MAX_SEGS_PER_CHUNK segmen / ≤ MAX_CHARS_PER_CHUNK."""
+    chunks: list[list[tuple[int, str, int]]] = []
+    cur: list[tuple[int, str, int]] = []
+    chars = 0
+    for it in items:
+        if cur and (len(cur) >= MAX_SEGS_PER_CHUNK or chars + len(it[1]) > MAX_CHARS_PER_CHUNK):
+            chunks.append(cur)
+            cur, chars = [], 0
+        cur.append(it)
+        chars += len(it[1])
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 def translate_segments(
     log: Logger,
     api_key: str,
     items: list[tuple[int, str, int]],
-    model: str = MODEL,
+    model: str | None = None,
     target: str = "en",
+    on_chunk: Callable[[int, int], None] | None = None,
 ) -> dict[int, str]:
-    """Terjemahkan [(idx, text_id, budget_chars)] → {idx: text_en} via Groq chat.
+    """Terjemahkan [(idx, teks, budget_chars)] → {idx: teks hasil} via Groq chat.
 
-    target="en": Indonesia→Inggris (fallback bila translate Whisper halusinasi).
-    target="id": Inggris→Indonesia (back-translate untuk teks referensi bila
-    segmentasi kanonik diambil dari pass translations — §32 v2).
-    Satu panggilan chat completion wajib-JSON; retry + exponential backoff untuk
-    429/5xx/network; 400 param ditolak → relaksasi (reasoning_effort lalu
-    response_format). Semua idx WAJIB hadir di jawaban, selain itu GroqLlmError.
+    target="en": Indonesia→Inggris (penerjemah primer build pertama — §36).
+    target="id": Inggris→Indonesia (back-translate; dipertahankan untuk alat uji).
+    model=None → rantai MODEL_PRIMARY → MODEL_FALLBACK; model eksplisit → tunggal.
+    Video panjang otomatis di-chunk; `on_chunk(i, n)` utk progress UI.
     """
-    total = sum(len(t) for _, t, _ in items)
-    if total > MAX_CHARS_PER_CALL:
-        raise GroqLlmError(
-            "llm_payload_too_large",
-            f"teks sumber {total} char melebihi batas fallback LLM {MAX_CHARS_PER_CALL}",
-        )
+    if not items:
+        return {}
+    chunks = _chunk_items(items)
+    models = [model] if model else [MODEL_PRIMARY, MODEL_FALLBACK]
+    mi = 0
+    out: dict[int, str] = {}
+    context: list[tuple[str, str]] = []
+    for ci, chunk in enumerate(chunks, 1):
+        while True:
+            try:
+                part = _translate_chunk(log, api_key, chunk, models[mi], target, context)
+                break
+            except GroqLlmError as e:
+                if e.code == "llm_model_not_found" and mi + 1 < len(models):
+                    log.warn(
+                        f"groq_llm: model {models[mi]} tidak tersedia — "
+                        f"beralih ke {models[mi + 1]}"
+                    )
+                    mi += 1
+                    continue
+                raise
+        out.update(part)
+        if target == "en":
+            for idx, text, _ in chunk[-CONTEXT_LINES:]:
+                if text.strip() and out.get(idx):
+                    context.append((text, out[idx]))
+            context = context[-CONTEXT_LINES:]
+        if on_chunk is not None:
+            on_chunk(ci, len(chunks))
+    return out
+
+
+def _translate_chunk(
+    log: Logger,
+    api_key: str,
+    items: list[tuple[int, str, int]],
+    model: str,
+    target: str,
+    context: list[tuple[str, str]],
+) -> dict[int, str]:
+    """Satu panggilan chat wajib-JSON utk satu chunk + retry/backoff (429/5xx/network)."""
     if target == "id":
         user = (
             "Translate these segments to Indonesian. Each line: idx, English text.\n"
@@ -94,10 +159,14 @@ def translate_segments(
         system = _SYSTEM_ID
         out_field = "text_id"
     else:
-        user = (
-            "Translate these segments to English. Each line: idx, budget, Indonesian text.\n"
-            + "\n".join(f'- idx={idx} budget={budget} id="{text}"' for idx, text, budget in items)
-        )
+        parts = ["Translate these segments to English. Each line: idx, budget, Indonesian text."]
+        if context:
+            parts.append(
+                "Previous lines (already translated — context only, do NOT translate or repeat):"
+            )
+            parts.extend(f'- id="{src}" → en="{dst}"' for src, dst in context)
+        parts.extend(f'- idx={idx} budget={budget} id="{text}"' for idx, text, budget in items)
+        user = "\n".join(parts)
         system = _SYSTEM_EN
         out_field = "text_en"
 
@@ -152,6 +221,15 @@ def translate_segments(
             return out
 
         last = f"HTTP {r.status_code}: {r.text[:200]}"
+        if r.status_code == 429 and "daily" in (r.text or "").lower():
+            # kuota harian habis — retry membakar waktu tanpa hasil (§31: fail-fast)
+            raise GroqLlmError(
+                "groq_daily_quota",
+                "Kuota harian Groq untuk model ini habis — coba lagi besok "
+                "(atau naikkan tier kunci Groq-mu di console.groq.com)",
+            )
+        if r.status_code == 404 or (r.status_code == 400 and "model_not_found" in r.text):
+            raise GroqLlmError("llm_model_not_found", last)
         if r.status_code == 400 and "reasoning_effort" in body:
             del body["reasoning_effort"]
             continue
@@ -161,7 +239,13 @@ def translate_segments(
         if r.status_code == 429 or r.status_code >= 500:
             if attempt == MAX_RETRIES:
                 raise GroqLlmError("llm_rate_limit" if r.status_code == 429 else "llm_failed", last)
-            _backoff(log, attempt, last)
+            ra = (getattr(r, "headers", None) or {}).get("retry-after")
+            wait = None
+            try:
+                wait = float(ra) if ra else None
+            except ValueError:
+                wait = None
+            _backoff(log, attempt, last, wait=wait)
             continue
         raise GroqLlmError("llm_failed", last)
 

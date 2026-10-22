@@ -12,6 +12,7 @@ Perilaku:
   - kegagalan di sini TIDAK boleh membuat step merah (sudah `always()`),
     tapi kita tetap catat sebagai warning
 """
+
 from __future__ import annotations
 
 import argparse
@@ -67,7 +68,11 @@ def main() -> int:
         "contract_version": contract,
         "job_id": job_id,
         "status": "cancelled" if args.conclusion == "cancelled" else "failed",
-        "error": {"code": code, "message": str(message)[:2000], "step": report.get("error_step", "unknown")},
+        "error": {
+            "code": code,
+            "message": str(message)[:2000],
+            "step": report.get("error_step", "unknown"),
+        },
         "engine_version": engine_version,
         "finished_at": int(time.time() * 1000),
     }

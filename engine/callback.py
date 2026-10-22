@@ -13,6 +13,7 @@ Kenapa raw_body ikut ditandatangani (bukan cuma field tertentu)?
 Ukuran: Worker membatasi 1 MB. Kalau segmen terlalu banyak, payload dipotong
 dan `overflow` diisi referensi ke file JSON lengkap di Drive.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -34,11 +35,15 @@ class CallbackError(Exception):
 
 
 def sign(secret: str, job_id: str, raw_body: bytes) -> str:
-    digest = hmac.new(secret.encode(), job_id.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
+    digest = hmac.new(
+        secret.encode(), job_id.encode() + b"." + raw_body, hashlib.sha256
+    ).hexdigest()
     return f"sha256={digest}"
 
 
-def _headers(secret: str, job_id: str, raw_body: bytes, event: str, run_id: str, run_url: str) -> dict[str, str]:
+def _headers(
+    secret: str, job_id: str, raw_body: bytes, event: str, run_id: str, run_url: str
+) -> dict[str, str]:
     h = {
         "content-type": "application/json",
         "x-inggrisin-event": event,

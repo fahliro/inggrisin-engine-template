@@ -1,12 +1,12 @@
 """
 inggrisin engine v2 — orkestrator DUBBING dengan dua mode.
 
-  --mode first     pipeline penuh (docs/01 §29 — TANPA LLM):
-                   download → extract audio → Groq Whisper 2×
-                   (transcribe id = teks asli + timing kanonik; translate =
-                   Inggris langsung) → align → Piper TTS (satu suara) →
-                   voice track + BGM asli (demucs) → vertical.py SATU pass
-                   (9:16 blur + burn ASS + mux) → Drive
+  --mode first     pipeline penuh (docs/01 §36 — Whisper 1× + gpt-oss 1×):
+                   download → extract audio → Groq Whisper 1×
+                   (transcribe id = teks asli + timing kanonik) → terjemahan
+                   gpt-oss 1:1 per segmen (groq_llm, chunked) → Piper TTS
+                   (satu suara) → voice track + BGM asli (demucs) →
+                   vertical.py SATU pass (9:16 blur + burn ASS + mux) → Drive
 
   --mode revision  SRT pass-through (docs/00 §6, docs/01 §20):
                    fetch SRT+manifest (tervalidasi di Worker) → download video
@@ -322,37 +322,36 @@ def run_first(
     step_ref[0] = "transcribe"
     prog.stage("transcribing", "Mendengarkan ucapan Indonesia")
     t = time.monotonic()
-    # docs/01 §29: DUA pass Whisper Groq atas audio yang sama —
-    #   1) transcribe (language=id) → teks asli + timing kanonik (manifest)
-    #   2) translate (/audio/translations) → Inggris LANGSUNG, tanpa LLM.
-    # LLM (OpenRouter) tidak lagi dipakai di build pertama; persona slang/formal
-    # adalah fitur retranslate di app (docs/01 §28).
+    # docs/01 §36: SATU pass Groq Whisper (transcribe saja) — teks asli +
+    # timing kanonik (manifest). Terjemahan Inggris lahir 1:1 per segmen via
+    # groq_llm (gpt-oss): tidak ada lagi dua segmentasi yang harus didamaikan,
+    # align lintas-pass (§29/§34) punah, baris duplikat mustahil by construction.
     chunks: list[Path] = []
     if audio.needs_chunking(audio_path):
         chunks = audio.split_chunks(log, audio_path, cfg.chunks_dir)
 
-    def _groq(task: str, on_chunk: Any = None) -> transcribe.Transcript:
+    def _transcribe(language: str | None, on_chunk: Any = None) -> transcribe.Transcript:
         if chunks:
             return transcribe.transcribe_chunks(
                 log,
                 cfg.groq_api_key,
                 chunks,
                 model=cfg.whisper_model,
-                language="id" if task == "transcribe" else None,
+                language=language,
                 on_chunk=on_chunk,
-                task=task,
+                task="transcribe",
             )
         return transcribe.transcribe_file(
             log,
             cfg.groq_api_key,
             audio_path,
             model=cfg.whisper_model,
-            language="id" if task == "transcribe" else None,
-            task=task,
+            language=language,
+            task="transcribe",
         )
 
-    tr = _groq(
-        "transcribe",
+    tr = _transcribe(
+        "id",
         on_chunk=lambda i, n: prog.send(
             "transcribing", f"Mendengarkan bagian {i}/{n}", percent=20 + int(10 * i / max(n, 1))
         ),
@@ -362,106 +361,57 @@ def run_first(
     if not tr.text.strip():
         raise RuntimeError("Transkrip kosong — video mungkin hanya musik/keheningan")
 
-    step_ref[0] = "translate"
-    prog.stage("translating", "Menerjemahkan ke Inggris (Whisper langsung, tanpa LLM)")
-    t = time.monotonic()
-    tren = _groq(
-        "translate",
-        on_chunk=lambda i, n: prog.send(
-            "translating", f"Menerjemahkan bagian {i}/{n}", percent=30 + int(15 * i / max(n, 1))
-        ),
-    )
-    id_segs = [s for s in tr.segments if (s.text or "").strip()]
-    texts_en = transcribe.align_translation(id_segs, tren.segments)
-    id_text_override: list[str] | None = None
-
-    # Guard silang-pass (docs/01 §32 v2): bila pass sumber degenerat dibanding
-    # pass translate, JANGAN langsung membuang salah satu — coba varian
-    # transcribe (auto-detect), lalu putuskan lewat keyakinan ucapan
-    # (no_speech_prob) milik pass translate.
-    if transcribe.source_degenerate(tr, tren):
-        _id_chars = sum(len((s.text or "").strip()) for s in tr.segments)
-        _en_chars = sum(len((s.text or "").strip()) for s in tren.segments)
+    # Guard degenerasi single-pass (§36): tanpa telinga kedua, heuristik
+    # keyakinan-ucapan + volume teks yang memutuskan (transcript_degenerate).
+    # Transkrip forced-id mencurigakan → satu retry auto-detect; dua-duanya
+    # degenerat → gagal jelas, karangan tidak dipublikasikan (§22).
+    if transcribe.transcript_degenerate(tr, total_duration):
         log.warn(
-            f"transkrip sumber degenerat: {_id_chars} char vs {_en_chars} char Inggris — "
-            "coba varian transcribe auto-detect sebelum mempercayai pass lain"
+            f"transkrip forced-id dicurigai degenerat ({len(tr.text.strip())} char "
+            f"untuk {total_duration:.0f}s) — retry transcribe auto-detect"
         )
-        if chunks:
-            tr_auto = transcribe.transcribe_chunks(
-                log,
-                cfg.groq_api_key,
-                chunks,
-                model=cfg.whisper_model,
-                language=None,
-                task="transcribe",
-            )
-        else:
-            tr_auto = transcribe.transcribe_file(
-                log,
-                cfg.groq_api_key,
-                audio_path,
-                model=cfg.whisper_model,
-                language=None,
-                task="transcribe",
-            )
-        if tr_auto.text.strip() and not transcribe.source_degenerate(tr_auto, tren):
+        tr_auto = _transcribe(None)
+        if tr_auto.text.strip() and not transcribe.transcript_degenerate(tr_auto, total_duration):
             log.warn(
                 f"transkrip auto-detect dipakai: language={tr_auto.language}, "
                 f"{len(tr_auto.segments)} segmen"
             )
             tr = tr_auto
-            id_segs = [s for s in tr.segments if (s.text or "").strip()]
-            texts_en = transcribe.align_translation(id_segs, tren.segments)
         else:
-            # Transcribe degenerat di semua varian sementara translate sehat.
-            # Keyakinan ucapan translate yang memutuskan: ucapan riil →
-            # translate dijadikan KANONIK (timing + text_en), text_id =
-            # back-translate en→id via LLM (referensi). Tanpa ucapan → gagal
-            # jelas (§22, tanpa hasil parsial).
-            conf = transcribe.speech_confidence(tren)
-            conf_ok = (conf is not None and conf < 0.5) or (
-                conf is None and len(tren.segments) >= 2
+            raise RuntimeError(
+                "Transkrip Whisper degenerat di kedua varian (forced-id & auto-detect) — "
+                "decoder Groq gagal membaca audio ini (quirk §32). Dengan 1 pass (§36) "
+                "tidak ada telinga kedua; job digagalkan jelas daripada menerbitkan "
+                "teks karangan (§22)."
             )
-            log.warn(f"transcribe degenerat di semua varian; keyakinan ucapan translate={conf}")
-            if not conf_ok:
-                raise RuntimeError(
-                    "Transkrip dan terjemahan Whisper sama-sama tidak meyakinkan — "
-                    "audio kemungkinan hanya musik/keheningan tanpa ucapan"
-                )
-            en_segs = [s for s in tren.segments if (s.text or "").strip()]
-            items_bt = [(i, s.text, srt.budget_of(s.start, s.end)) for i, s in enumerate(en_segs)]
-            bt = groq_llm.translate_segments(log, cfg.groq_api_key, items_bt, target="id")
-            log.warn(
-                f"pass translations dijadikan kanonik ({len(en_segs)} segmen); "
-                "text_id = back-translate en→id via LLM (referensi)"
-            )
-            id_segs = en_segs
-            texts_en = [s.text for s in en_segs]
-            id_text_override = [bt.get(i, "") for i in range(len(en_segs))]
-    else:
-        # Sumber sehat: pastikan translate tidak halusinasi di atasnya
-        conf = transcribe.speech_confidence(tren)
-        if conf is not None and conf >= 0.5:
-            log.warn(
-                f"translate Whisper dicurigai halusinasi (no_speech_prob={conf:.2f}) — "
-                "terjemahan teks sumber via LLM Groq gpt-oss-20b"
-            )
-            items = [(i, s.text, srt.budget_of(s.start, s.end)) for i, s in enumerate(id_segs)]
-            llm_en = groq_llm.translate_segments(log, cfg.groq_api_key, items)
-            texts_en = [llm_en.get(i, "") for i in range(len(id_segs))]
 
+    id_segs = [s for s in tr.segments if (s.text or "").strip()]
     shutil.rmtree(cfg.chunks_dir, ignore_errors=True)
+
+    step_ref[0] = "translate"
+    prog.stage("translating", "Menerjemahkan ke Inggris (gpt-oss via Groq)")
+    t = time.monotonic()
+    items = [(i, seg.text, srt.budget_of(seg.start, seg.end)) for i, seg in enumerate(id_segs)]
+    en_map = groq_llm.translate_segments(
+        log,
+        cfg.groq_api_key,
+        items,
+        on_chunk=lambda i, n: prog.send(
+            "translating", f"Menerjemahkan bagian {i}/{n}", percent=30 + int(15 * i / max(n, 1))
+        ),
+    )
+    texts_en = [en_map.get(i, "") for i in range(len(id_segs))]
     timings["translate_s"] = round(time.monotonic() - t, 2)
     empty = sum(1 for x in texts_en if not x)
     report.stage_done(
         "translate",
         timings["translate_s"],
         segments=len(id_segs),
-        via="whisper-translate",
+        via="groq-llm",
         empty=empty,
     )
-    if not tren.text.strip() or empty == len(id_segs):
-        raise RuntimeError("Terjemahan Whisper kosong — tidak ada teks Inggris yang dihasilkan")
+    if empty == len(id_segs):
+        raise RuntimeError("Terjemahan LLM kosong — tidak ada teks Inggris yang dihasilkan")
 
     # baris subtitle: pecah yang terlalu panjang demi keterbacaan (docs/01 §32)
     rows = [
@@ -469,7 +419,7 @@ def run_first(
             "idx": i,
             "start": s.start,
             "end": s.end,
-            "text_id": id_text_override[i] if id_text_override else s.text,
+            "text_id": s.text,
             "text_en": texts_en[i],
         }
         for i, s in enumerate(id_segs)
@@ -511,18 +461,15 @@ def run_first(
             "duration_seconds": round(total_duration, 3),
             "subtitles": _subtitle_dicts(segs),
             "subtitles_total": len(segs),
-            "terms": [],  # NER istilah = produk era LLM (§29: whisper translate langsung)
+            "terms": [],  # NER istilah = produk era lama; §36 terjemahan 1:1 gpt-oss
             "manifest": manifest,
             "truncated": False,
             "timings": {**timings, "total_s": round(sum(timings.values()), 2)},
             "usage": {
-                # dua pass whisper (transcribe + translate) atas audio yang sama
-                "audio_seconds": round(
-                    (getattr(tr, "audio_seconds_billed", 0.0) or 0.0)
-                    + (getattr(tren, "audio_seconds_billed", 0.0) or 0.0),
-                    1,
-                ),
-                "llm_tokens_prompt": 0,
+                # SATU pass whisper (§36) atas audio. Bila guard degenerasi
+                # retry auto-detect, tr diganti — yang terhitung pass terakhir.
+                "audio_seconds": round(getattr(tr, "audio_seconds_billed", 0.0) or 0.0, 1),
+                "llm_tokens_prompt": 0,  # usage gpt-oss belum diagregasi (§36)
                 "llm_tokens_completion": 0,
                 "tts_lines": len(segs),
             },

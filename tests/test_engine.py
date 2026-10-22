@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -839,33 +840,8 @@ def test_upload_proxy_chunk_resume_setelah_gagal(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# §29 — whisper translate langsung: aligner + endpoint translations
+# §29 — plumbing endpoint translations (DORMAN sejak §36: build pertama 1 pass)
 # ---------------------------------------------------------------------------
-
-
-def test_align_translation_overlap_dan_fallback_pusat():
-    id_segs = [
-        transcribe_mod.Segment(0.0, 4.0, "Halo"),
-        transcribe_mod.Segment(4.0, 8.0, "Dunia"),
-        transcribe_mod.Segment(8.0, 12.0, "Apa kabar"),
-    ]
-    en_segs = [
-        transcribe_mod.Segment(0.5, 3.5, "Hello"),  # overlap penuh ke slot 0
-        transcribe_mod.Segment(3.6, 7.9, "World"),  # overlap terbesar slot 1
-        transcribe_mod.Segment(13.0, 15.0, "How are you"),  # NOL overlap → pusat terdekat (slot 2)
-    ]
-    out = transcribe_mod.align_translation(id_segs, en_segs)
-    assert out == ["Hello", "World", "How are you"]
-
-
-def test_align_translation_gabung_urut_dan_kosong():
-    id_segs = [transcribe_mod.Segment(0.0, 10.0, "Panjang")]
-    en_segs = [
-        transcribe_mod.Segment(0.0, 4.0, "Part one"),
-        transcribe_mod.Segment(4.0, 8.0, "part two"),
-    ]
-    assert transcribe_mod.align_translation(id_segs, en_segs) == ["Part one part two"]
-    assert transcribe_mod.align_translation(id_segs, []) == [""]
 
 
 def test_transcribe_file_task_translate_pakai_endpoint_translations(monkeypatch, tmp_path):
@@ -963,7 +939,7 @@ def test_translate_json_retry_dengan_backoff(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# §32 — guard degenerasi bahasa + pemecahan baris panjang
+# §32 — pemecahan baris panjang (helper _tr dipakai juga oleh guard §36)
 # ---------------------------------------------------------------------------
 def _tr(segs: list[tuple[float, float, str]]) -> transcribe_mod.Transcript:
     return transcribe_mod.Transcript(
@@ -972,27 +948,6 @@ def _tr(segs: list[tuple[float, float, str]]) -> transcribe_mod.Transcript:
         duration_s=segs[-1][1] if segs else 0.0,
         segments=[transcribe_mod.Segment(start=a, end=b, text=t) for a, b, t in segs],
     )
-
-
-def test_source_degenerate_mendeteksi_mismatch_bahasa():
-    # kasus nyata job_t5zERPmDIF2Z2Rpw: transcribe(id) 13 char vs translate 169 char
-    id_tr = _tr([(0.0, 10.0, "Terima kasih.")])
-    en_tr = _tr(
-        [
-            (0.0, 2.0, "Why are there so many parents here?"),
-            (2.0, 4.0, "The children are struggling."),
-            (4.0, 6.0, "Wow, this is so hard."),
-            (6.0, 8.0, "It turns out that what they need, kindness, is spreading."),
-            (8.0, 10.0, "Just start and continue."),
-        ]
-    )
-    assert transcribe_mod.source_degenerate(id_tr, en_tr) is True
-    # pass sehat: char seimbang → tidak degenerat
-    id_ok = _tr([(0.0, 5.0, "Akhirnya sampai juga."), (5.0, 10.0, "Keliatannya tenang banget ya.")])
-    en_ok = _tr([(0.0, 5.0, "Finally made it."), (5.0, 10.0, "Looks really chill.")])
-    assert transcribe_mod.source_degenerate(id_ok, en_ok) is False
-    # teks Inggris kecil → jangan menilai (hindari false positive)
-    assert transcribe_mod.source_degenerate(_tr([]), _tr([(0.0, 2.0, "Hello there.")])) is False
 
 
 def test_split_long_rows_memecah_dinding_teks():
@@ -1074,7 +1029,7 @@ def test_groq_llm_translate_segments_sukses(monkeypatch):
     monkeypatch.setattr(groq_llm.requests, "post", fake_post)
     out = groq_llm.translate_segments(LOG, "k", [(0, "Terima kasih.", 187)])
     assert out == {0: "Thank you."}
-    assert seen["body"]["model"] == "openai/gpt-oss-20b"
+    assert seen["body"]["model"] == "openai/gpt-oss-120b"
     assert "idx=0 budget=187" in seen["body"]["messages"][1]["content"]
 
 
@@ -1172,32 +1127,6 @@ def test_progress_heartbeat_mengirim_berkala():
     assert len(sent) >= 2
 
 
-def test_align_v2_sebar_kata_proporsional_tanpa_duplikat():
-    id_segs = [
-        transcribe_mod.Segment(start=0.0, end=2.0, text="a"),
-        transcribe_mod.Segment(start=2.0, end=4.0, text="b"),
-        transcribe_mod.Segment(start=4.0, end=6.0, text="c"),
-    ]
-    en_segs = [
-        transcribe_mod.Segment(
-            start=0.0, end=6.0, text="one two three four five six seven eight nine"
-        )
-    ]
-    out = transcribe_mod.align_translation(id_segs, en_segs)
-    # tiga slot terisi fragmen BERBEDA (tidak ada duplikasi)
-    assert len(set(out)) == 3
-    assert all(out), out
-    # gabungan fragmen = teks asli (urutan terjaga)
-    assert " ".join(out) == "one two three four five six seven eight nine"
-
-
-def test_align_v2_satu_slot_tetap_utuh():
-    id_segs = [transcribe_mod.Segment(start=0.0, end=2.0, text="a")]
-    en_segs = [transcribe_mod.Segment(start=0.0, end=2.0, text="Hello there friend")]
-    out = transcribe_mod.align_translation(id_segs, en_segs)
-    assert out == ["Hello there friend"]
-
-
 def test_vertical_bitrate_tier_video_panjang(tmp_path):
     from engine import vertical
 
@@ -1219,42 +1148,6 @@ def test_vertical_bitrate_tier_video_panjang(tmp_path):
         duration_s=30.0,
     )
     assert "2500k" in cmd_short and "192k" in cmd_short
-
-
-def test_align_translation_sebar_proporsional_tanpa_duplikat():
-    id_segs = [
-        transcribe_mod.Segment(start=0.0, end=2.0, text="a"),
-        transcribe_mod.Segment(start=2.0, end=4.0, text="b"),
-        transcribe_mod.Segment(start=4.0, end=6.0, text="c"),
-    ]
-    en_segs = [
-        transcribe_mod.Segment(
-            start=0.0,
-            end=6.0,
-            text="one two three four five six seven eight nine ten eleven twelve",
-        )
-    ]
-    out = transcribe_mod.align_translation(id_segs, en_segs)
-    # tiap slot dapat fragmen sendiri — tidak ada duplikasi, tidak ada kosong
-    assert all(t for t in out), out
-    assert len(set(out)) == 3
-    # gabungan fragmen = teks asli utuh, urut
-    assert " ".join(out) == "one two three four five six seven eight nine ten eleven twelve"
-    # proporsional: porsi waktu sama → porsi kata sama (4-4-4)
-    assert [len(t.split()) for t in out] == [4, 4, 4]
-
-
-def test_align_translation_segmen_pendek_tetap_utuh():
-    id_segs = [
-        transcribe_mod.Segment(start=0.0, end=2.0, text="a"),
-        transcribe_mod.Segment(start=2.0, end=4.0, text="b"),
-    ]
-    en_segs = [
-        transcribe_mod.Segment(start=0.0, end=1.9, text="First line."),
-        transcribe_mod.Segment(start=2.1, end=4.0, text="Second line."),
-    ]
-    out = transcribe_mod.align_translation(id_segs, en_segs)
-    assert out == ["First line.", "Second line."]
 
 
 def test_vertical_cmd_tier_bitrate_durasi(tmp_path):
@@ -1323,3 +1216,157 @@ def test_build_ass_fontsize_proporsional_kanvas(tmp_path):
     # MarginV 19% kanvas: 365 vs 243 — posisi relatif identik
     assert ",64,64,365,1" in t1080
     assert ",64,64,243,1" in t720
+
+
+# ---------------------------------------------------------------------------
+# §36 — single-pass: guard degenerasi transkrip + groq_llm chunked/fallback
+# ---------------------------------------------------------------------------
+
+
+def test_transcript_degenerate_kunci_decoder():
+    # kasus nyata §32: 10s ucapan riil (conf 0.24) tapi decoder terkunci
+    # mengembalikan satu frasa pendek
+    tr = _tr([(0.0, 10.0, "Terima kasih.")])
+    tr.segments[0].no_speech_prob = 0.24
+    assert transcribe_mod.transcript_degenerate(tr, 10.0) is True
+
+
+def test_transcript_degenerate_sehat_dan_pengecualian():
+    sehat = _tr(
+        [
+            (0.0, 5.0, "Kok banyak orang tua disini?"),
+            (5.0, 10.0, "Anak-anaknya merantau dan bekerja di kota besar."),
+        ]
+    )
+    for seg in sehat.segments:
+        seg.no_speech_prob = 0.2
+    assert transcribe_mod.transcript_degenerate(sehat, 10.0) is False
+    # audio pendek (< 8s) dikecualikan — ucapan singkat sah bisa sangat pendek
+    pendek = _tr([(0.0, 6.0, "Halo.")])
+    pendek.segments[0].no_speech_prob = 0.1
+    assert transcribe_mod.transcript_degenerate(pendek, 6.0) is False
+    # tidak yakin ucapan (conf >= 0.5) → bukan urusan guard ini (jalur musik/
+    # keheningan gagal lewat pemeriksaan teks kosong / no_speech)
+    musik = _tr([(0.0, 30.0, "Thank you.")])
+    musik.segments[0].no_speech_prob = 0.9
+    assert transcribe_mod.transcript_degenerate(musik, 30.0) is False
+    # ucapan sah yang jarang (30 char / 60s) TIDAK boleh kena
+    jarang = _tr([(0.0, 60.0, "Selamat datang. Hari ini kita mulai.")])
+    jarang.segments[0].no_speech_prob = 0.3
+    assert transcribe_mod.transcript_degenerate(jarang, 60.0) is False
+
+
+def test_groq_llm_chunking_dan_konteks_antar_chunk(monkeypatch):
+    from engine import groq_llm
+
+    items = [(i, f"kalimat nomor {i} di video ini", 500) for i in range(130)]
+    dumps = json.dumps
+    calls = []
+
+    class R:
+        status_code = 200
+
+        def __init__(self, content):
+            self._c = content
+
+        def json(self):
+            return {"choices": [{"message": {"content": self._c}}]}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json)
+        idxs = [int(m) for m in re.findall(r"idx=(\d+)", json["messages"][1]["content"])]
+        return R(dumps({"segments": [{"idx": i, "text_en": f"line {i}"} for i in idxs]}))
+
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    progress = []
+    out = groq_llm.translate_segments(
+        LOG, "k", items, on_chunk=lambda i, n: progress.append((i, n))
+    )
+    # 130 segmen > 60/chunk → minimal 2 panggilan; semua idx pulang 1:1
+    assert len(calls) >= 2
+    assert len(out) == 130 and out[129] == "line 129"
+    assert progress == [(i, len(calls)) for i in range(1, len(calls) + 1)]
+    # chunk ke-2 membawa konteks terjemahan chunk sebelumnya
+    assert "context only" in calls[1]["messages"][1]["content"]
+    assert 'en="line' in calls[1]["messages"][1]["content"]
+
+
+def test_groq_llm_fallback_model_saat_404(monkeypatch):
+    from engine import groq_llm
+
+    seen_models = []
+
+    class R404:
+        status_code = 404
+        text = "The model openai/gpt-oss-120b does not exist or you do not have access"
+
+    class R200:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": '{"segments":[{"idx":0,"text_en":"Hi."}]}'}}]
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen_models.append(json["model"])
+        return R404() if json["model"] == groq_llm.MODEL_PRIMARY else R200()
+
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    monkeypatch.setattr(groq_llm.time, "sleep", lambda s: None)
+    out = groq_llm.translate_segments(LOG, "k", [(0, "Hai.", 50)])
+    assert out == {0: "Hi."}
+    assert seen_models == [groq_llm.MODEL_PRIMARY, groq_llm.MODEL_FALLBACK]
+
+
+def test_groq_llm_kuota_harian_fail_fast(monkeypatch):
+    from engine import groq_llm
+
+    calls = {"n": 0}
+    slept = []
+
+    class R429Daily:
+        status_code = 429
+        text = '{"error":{"message":"You have reached your daily quota for this model."}}'
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        return R429Daily()
+
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    monkeypatch.setattr(groq_llm.time, "sleep", lambda s: slept.append(s))
+    with pytest.raises(groq_llm.GroqLlmError) as e:
+        groq_llm.translate_segments(LOG, "k", [(0, "Hai.", 50)])
+    assert e.value.code == "groq_daily_quota"
+    assert calls["n"] == 1  # nol retry sia-sia (§31)
+    assert not slept
+
+
+def test_groq_llm_retry_after_429_dihormati(monkeypatch):
+    from engine import groq_llm
+
+    class R429:
+        status_code = 429
+        text = "rate limit per minute"
+        headers = {"retry-after": "7"}
+
+    class R200:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": '{"segments":[{"idx":0,"text_en":"Hi."}]}'}}]
+            }
+
+    calls = {"n": 0}
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        return R429() if calls["n"] == 1 else R200()
+
+    slept = []
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    monkeypatch.setattr(groq_llm.time, "sleep", lambda s: slept.append(s))
+    out = groq_llm.translate_segments(LOG, "k", [(0, "Hai.", 50)])
+    assert out == {0: "Hi."}
+    assert slept == [7.0]  # header retry-after, bukan backoff buta
