@@ -1277,3 +1277,49 @@ def test_vertical_cmd_tier_bitrate_durasi(tmp_path):
     # audio: panjang 96k, pendek 192k
     assert long_[long_.index("-b:a") + 1] == "96k"
     assert short[short.index("-b:a") + 1] == "192k"
+
+
+def test_pick_target_size_tier_resolusi():
+    # sumber full-HD+ (sisi pendek >= 1080) → kanvas penuh
+    assert vertical.pick_target_size(1920, 1080) == (1080, 1920)
+    assert vertical.pick_target_size(1080, 1920) == (1080, 1920)
+    assert vertical.pick_target_size(3840, 2160) == (1080, 1920)
+    # sumber rendah-res → 720x1280 (docs/01 §35)
+    assert vertical.pick_target_size(1280, 720) == (720, 1280)
+    assert vertical.pick_target_size(854, 480) == (720, 1280)
+    assert vertical.pick_target_size(720, 1280) == (720, 1280)
+    # probe tak diketahui → kanvas penuh (defensif, perilaku lama)
+    assert vertical.pick_target_size(0, 0) == (1080, 1920)
+
+
+def test_vertical_cmd_tier_bitrate_kanvas_720(tmp_path):
+    args = dict(
+        src=tmp_path / "s.mp4",
+        voice_wav=tmp_path / "v.wav",
+        ass=tmp_path / "x.ass",
+        out=tmp_path / "o.mp4",
+        aspect="horizontal",
+    )
+    long_ = vertical.build_render_cmd(**args, duration_s=700, w=720, h=1280)
+    assert long_[long_.index("-crf") + 1] == "23"
+    assert long_[long_.index("-maxrate") + 1] == "500k"
+    assert long_[long_.index("-bufsize") + 1] == "1000k"
+    assert long_[long_.index("-b:a") + 1] == "96k"
+    short = vertical.build_render_cmd(**args, duration_s=60, w=720, h=1280)
+    assert short[short.index("-crf") + 1] == "20"
+    assert short[short.index("-maxrate") + 1] == "1500k"
+    assert short[short.index("-b:a") + 1] == "192k"
+    # kanvas 720x1280 benar-benar dipakai filter scale/crop
+    fc = long_[long_.index("-filter_complex") + 1]
+    assert "scale=720:1280" in fc and "crop=720:1280" in fc
+
+
+def test_build_ass_fontsize_proporsional_kanvas(tmp_path):
+    cues = [srt.Cue(idx=0, start=0.0, end=2.0, text="Hello world")]
+    t1080 = vertical.build_ass(cues, tmp_path / "a.ass").read_text()
+    t720 = vertical.build_ass(cues, tmp_path / "b.ass", w=720, h=1280).read_text()
+    assert "PlayResY: 1920" in t1080 and ",58," in t1080
+    assert "PlayResY: 1280" in t720 and ",39," in t720
+    # MarginV 19% kanvas: 365 vs 243 — posisi relatif identik
+    assert ",64,64,365,1" in t1080
+    assert ",64,64,243,1" in t720

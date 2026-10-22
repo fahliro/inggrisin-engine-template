@@ -140,6 +140,7 @@ def _tts_to_render(
     total_duration: float,
     aspect: str,
     step_ref: list[str],
+    target_wh: tuple[int, int] = (vertical.TARGET_W, vertical.TARGET_H),
 ) -> None:
     """Sintesis per baris → pasakan durasi (atempo ≤ 1,25) → rakit track → render."""
     step_ref[0] = "tts"
@@ -218,6 +219,8 @@ def _tts_to_render(
     vertical.build_ass(
         cues,
         cfg.ass_path,
+        w=target_wh[0],
+        h=target_wh[1],
         bottom_pct=int(cfg.options.get("subtitle_bottom_pct", 19)),
     )
     cmd = vertical.build_render_cmd(
@@ -227,6 +230,8 @@ def _tts_to_render(
         cfg.final_video_path,
         aspect,
         duration_s=total_duration,
+        w=target_wh[0],
+        h=target_wh[1],
     )
     with prog.heartbeat(
         "rendering", "Merender video vertikal + subtitle (video panjang bisa lama)", 60
@@ -303,6 +308,8 @@ def run_first(
     aspect = vertical.classify_aspect(vp.width, vp.height)
     total_duration = vp.duration_s or 0.0
     log.info(f"video: {vp.width}x{vp.height} ({aspect}), {total_duration:.1f}s")
+    target_wh = vertical.pick_target_size(vp.width, vp.height)
+    log.info(f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)")
 
     step_ref[0] = "extract"
     prog.stage("downloading", "Memisahkan suara dari gambar")
@@ -494,7 +501,9 @@ def run_first(
         }
         for r in rows
     ]
-    _tts_to_render(cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref)
+    _tts_to_render(
+        cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref, target_wh
+    )
     res = _upload(cfg, log, prog, report, timings)
 
     res.update(
@@ -593,6 +602,8 @@ def run_revision(
     vp = vertical.probe_video(log, cfg.source_path)
     aspect = vertical.classify_aspect(vp.width, vp.height)
     total_duration = max(vp.duration_s or 0.0, float(manifest.get("durationSeconds") or 0.0))
+    target_wh = vertical.pick_target_size(vp.width, vp.height)
+    log.info(f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)")
 
     # tempo dihitung ulang deterministik dari teks (TANPA LLM) — sama seperti
     # aturan Worker: est = len / (slot × CPS), clamp 1,25
@@ -614,7 +625,9 @@ def run_revision(
             }
         )
 
-    _tts_to_render(cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref)
+    _tts_to_render(
+        cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref, target_wh
+    )
     res = _upload(
         cfg,
         log,

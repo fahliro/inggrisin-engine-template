@@ -25,6 +25,8 @@ from .srt import Cue, sanitize_for_burn
 
 TARGET_W = 1080
 TARGET_H = 1920
+TARGET_W_SMALL = 720
+TARGET_H_SMALL = 1280
 TARGET_FPS = 30
 SUBTITLE_BOTTOM_PCT = 19  # di atas safe zone platform (docs/01 §16)
 FONT_SIZE = 58
@@ -82,6 +84,23 @@ def classify_aspect(width: int, height: int) -> str:
     return "square"
 
 
+def pick_target_size(src_w: int, src_h: int) -> tuple[int, int]:
+    """Kanvas 9:16 ber-tier resolusi sumber (docs/01 §35).
+
+    Upscaling sumber rendah-res ke 1080x1920 hanya menambah volume file tanpa
+    menambah detail (kasus job_cOBvywQXvtdQCcK1: sumber 360p 37,5 MB → hasil
+    60,7 MB di kanvas 1080). Sisi pendek sumber < 1080 → kanvas 720x1280;
+    subtitle burn-in TETAP tajam karena ASS dirender pada resolusi keluaran
+    (font size diskalakan proporsional PlayResY di build_ass).
+    Probe tak diketahui (≤ 0) → kanvas penuh seperti sebelumnya.
+    """
+    if src_w <= 0 or src_h <= 0:
+        return TARGET_W, TARGET_H
+    if min(src_w, src_h) >= TARGET_W:
+        return TARGET_W, TARGET_H
+    return TARGET_W_SMALL, TARGET_H_SMALL
+
+
 # ---------------------------------------------------------------------------
 # ASS (posisi subtitle presisi: MarginV = 19% tinggi — di atas safe zone)
 # ---------------------------------------------------------------------------
@@ -119,10 +138,13 @@ def build_ass(
     w: int = TARGET_W,
     h: int = TARGET_H,
     bottom_pct: int = SUBTITLE_BOTTOM_PCT,
-    font_size: int = FONT_SIZE,
+    font_size: int | None = None,
 ) -> Path:
     margin_v = round(h * bottom_pct / 100)
-    parts = [_ASS_HEADER.format(w=w, h=h, fs=font_size, mv=margin_v)]
+    # Font size proporsional kanvas (§35): 58 pada PlayResY 1920 ≡ 39 pada 1280 —
+    # ukuran relatif di layar identik, render tetap tajam pada resolusi keluaran.
+    fs = round(FONT_SIZE * h / TARGET_H) if font_size is None else font_size
+    parts = [_ASS_HEADER.format(w=w, h=h, fs=fs, mv=margin_v)]
     for c in cues:
         text = sanitize_for_burn(c.text).replace("\n", "\\N")
         parts.append(f"Dialogue: 0,{ass_time(c.start)},{ass_time(c.end)},Default,,0,0,0,,{text}\n")
@@ -156,18 +178,24 @@ def build_render_cmd(
     fps: int = TARGET_FPS,
     crf: int = 20,
 ) -> list[str]:
-    # Tier bitrate menurut durasi (docs/01 §34): CRF 20 polos membuat file
-    # 10+ menit membengkak (126 MB utk sumber 35 MB — upscaling sumber 360p
-    # ke 1080x1920 tidak butuh bitrate besar). Untuk video panjang: CRF lebih
-    # tinggi + maxrate/bufsize sebagai plafon, audio 96k cukup utk suara orang.
+    # Tier bitrate menurut durasi (docs/01 §34) × resolusi kanvas (§35):
+    # CRF 20 polos membuat file 10+ menit membengkak (126 MB utk sumber 35 MB),
+    # dan kanvas 720x1280 (44% piksel 1080x1920) butuh plafon lebih rendah.
+    # Audio 96k cukup utk suara orang; tier audio tetap menurut durasi.
     if crf == 20 and duration_s > 300:
         crf = 23
-        maxrate, bufsize, audio_k = "800k", "1600k", "96k"
+        maxrate, bufsize, audio_k = (
+            ("800k", "1600k", "96k") if h >= TARGET_H else ("500k", "1000k", "96k")
+        )
     elif crf == 20 and duration_s > 120:
         crf = 21
-        maxrate, bufsize, audio_k = "1500k", "3000k", "128k"
+        maxrate, bufsize, audio_k = (
+            ("1500k", "3000k", "128k") if h >= TARGET_H else ("900k", "1800k", "128k")
+        )
     else:
-        maxrate, bufsize, audio_k = "2500k", "5000k", "192k"
+        maxrate, bufsize, audio_k = (
+            ("2500k", "5000k", "192k") if h >= TARGET_H else ("1500k", "3000k", "192k")
+        )
     sub = f"subtitles='{_escape_filter_path(ass)}'"
     if aspect in ("horizontal", "square", "unknown"):
         # latar blur: split → latar diperbesar+d crop+blur, subjek di tengah
