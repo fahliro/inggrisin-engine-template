@@ -192,16 +192,21 @@ def _tts_to_render(
         step_ref[0] = "music"
         prog.stage("synthesizing", "Mempertahankan BGM/SFX asli")
         t = time.monotonic()
-        accom = audio.separate_accompaniment(
-            log, cfg.source_path, cfg.music_dir, cfg.accompaniment_path
-        )
-        if accom is not None:
-            audio.mix_voice_with_music(
-                log, cfg.voice_track_path, accom, total_duration, cfg.final_audio_path
+        with prog.heartbeat(
+            "synthesizing",
+            "Mempertahankan BGM/SFX asli (audio panjang bisa beberapa menit)",
+            60,
+        ):
+            accom = audio.separate_accompaniment(
+                log, cfg.source_path, cfg.music_dir, cfg.accompaniment_path
             )
-            final_audio = cfg.final_audio_path
-            timings["music_s"] = round(time.monotonic() - t, 2)
-            report.stage_done("music", timings["music_s"])
+            if accom is not None:
+                audio.mix_voice_with_music(
+                    log, cfg.voice_track_path, accom, total_duration, cfg.final_audio_path
+                )
+                final_audio = cfg.final_audio_path
+                timings["music_s"] = round(time.monotonic() - t, 2)
+                report.stage_done("music", timings["music_s"])
 
     step_ref[0] = "render"
     prog.stage("rendering", "Menyusun video vertikal + menempel subtitle (satu pass)")
@@ -223,7 +228,10 @@ def _tts_to_render(
         aspect,
         duration_s=total_duration,
     )
-    vertical.render(log, cmd)
+    with prog.heartbeat(
+        "rendering", "Merender video vertikal + subtitle (video panjang bisa lama)", 60
+    ):
+        vertical.render(log, cmd)
     timings["render_s"] = round(time.monotonic() - t, 2)
     report.stage_done(
         "render", timings["render_s"], aspect=aspect, bytes=cfg.final_video_path.stat().st_size

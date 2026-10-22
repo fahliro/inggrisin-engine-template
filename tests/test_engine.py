@@ -1153,3 +1153,20 @@ def test_groq_llm_target_id_back_translate(monkeypatch):
     assert out == {0: "Terima kasih."}
     assert "English → Indonesian" in seen["body"]["messages"][0]["content"]
     assert 'idx=0 en="Thank you."' in seen["body"]["messages"][1]["content"]
+
+
+def test_progress_heartbeat_mengirim_berkala():
+    from engine.progress import Progress
+
+    sent: list[str] = []
+
+    class P(Progress):
+        def send(self, status, message="", percent=None):  # type: ignore[override]
+            sent.append(status)
+
+    p = P(LOG, "", "s", "j1", "c")
+    import time as _t
+
+    with p.heartbeat("synthesizing", "msg", every=0.05):
+        _t.sleep(0.18)
+    assert len(sent) >= 2

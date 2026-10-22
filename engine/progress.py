@@ -11,12 +11,16 @@ Desain:
   - di-throttle: minimal 5 detik antar kiriman untuk status yang sama.
   - memakai HMAC yang sama dengan callback hasil.
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import requests
@@ -60,7 +64,9 @@ class Progress:
         self._max_percent = 0
 
     def _sign(self, body: str) -> str:
-        digest = hmac.new(self._secret, f"{self._job_id}.{body}".encode(), hashlib.sha256).hexdigest()
+        digest = hmac.new(
+            self._secret, f"{self._job_id}.{body}".encode(), hashlib.sha256
+        ).hexdigest()
         return f"sha256={digest}"
 
     def send(self, status: str, message: str = "", percent: int | None = None) -> None:
@@ -108,3 +114,22 @@ class Progress:
     def stage(self, status: str, message: str = "", **extra: Any) -> None:
         self._log.info(message or status, stage=status, **extra)
         self.send(status, message)
+
+    @contextmanager
+    def heartbeat(self, status: str, message: str, every: float = 60.0) -> Iterator[None]:
+        """Kirim progress berkala selama tahap SUNYI yang panjang (demucs,
+        render ffmpeg) supaya reconciler app tidak menganggap job mati
+        (docs/01 §33 kasus job_GbFcCQT41RZ5WeL4). Best-effort seperti send()."""
+        stop = threading.Event()
+
+        def _loop() -> None:
+            while not stop.wait(every):
+                self.send(status, message)
+
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            t.join(2.0)
