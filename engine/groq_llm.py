@@ -9,9 +9,12 @@ construction.
 
 Ketahanan (cermin §31 di Worker):
   - rantai model: gpt-oss-120b → gpt-oss-20b (404 / model tidak tersedia);
-  - video panjang: segmen di-chunk ≤60 segmen / ≤10K char; antar-chunk diberi
-    konteks 3 baris terakhir agar istilah & nada konsisten;
-  - 429 per-menit → hormati header retry-after, fallback backoff + jitter;
+  - video panjang: segmen di-chunk ≤40 segmen / ≤6K char (satu chunk muat dalam
+    satu jendela TPM kecil — insiden 429 TPM 8000 gpt-oss-120b); antar-chunk
+    diberi konteks 3 baris terakhir agar istilah & nada konsisten;
+  - 429 per-menit/TPM → tunggu jendela reset (retry-after, atau 60s utk TPM)
+    dengan anggaran retry terpisah (10×) — bukan backoff buta 4× yang mati
+    sebelum jendela berganti;
   - 429 kuota HARIAN → fail-fast `groq_daily_quota` (nol retry sia-sia);
   - 400 param ditolak → relaksasi 2 tahap (reasoning_effort, response_format).
 
@@ -34,9 +37,11 @@ from .log import Logger
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL_PRIMARY = "openai/gpt-oss-120b"
 MODEL_FALLBACK = "openai/gpt-oss-20b"
-MAX_RETRIES = 4
-MAX_SEGS_PER_CHUNK = 60
-MAX_CHARS_PER_CHUNK = 10_000
+MAX_RETRIES = 4  # kegagalan umum: network/5xx/JSON buruk
+MAX_RATE_RETRIES = 10  # 429 saja: tiap retry bisa berarti menunggu jendela 60s
+MAX_SEGS_PER_CHUNK = 40
+MAX_CHARS_PER_CHUNK = 6_000
+TPM_WINDOW_S = 60.0  # jendela tokens-per-minute Groq reset tiap menit
 CONTEXT_LINES = 3  # baris terjemahan sebelumnya dikirim sebagai konteks chunk
 
 
@@ -47,11 +52,14 @@ class GroqLlmError(Exception):
         self.message = message
 
 
-def _backoff(log: Logger, attempt: int, reason: str, wait: float | None = None) -> None:
+def _backoff(
+    log: Logger, attempt: int, reason: str, wait: float | None = None, cap: float = 90.0
+) -> None:
     if wait is None:
         wait = 2.0**attempt + random.uniform(0, 1.0)
-    log.warn(f"groq_llm: {reason} — retry {attempt}/{MAX_RETRIES} dalam {wait:.1f}s")
-    time.sleep(min(wait, 60.0))
+    wait = min(wait, cap) + random.uniform(0, 1.5)
+    log.warn(f"groq_llm: {reason} — retry dalam {wait:.1f}s")
+    time.sleep(wait)
 
 
 _SYSTEM_EN = "\n".join(
@@ -182,7 +190,9 @@ def _translate_chunk(
     }
 
     last = ""
-    for attempt in range(1, MAX_RETRIES + 1):
+    attempt = 0  # kegagalan umum (network/5xx/JSON/idx hilang)
+    rate_hits = 0  # 429 (per-minute / TPM) — anggaran terpisah, tunggu jendela
+    while True:
         try:
             r = requests.post(
                 GROQ_CHAT_URL,
@@ -196,7 +206,8 @@ def _translate_chunk(
             )
         except requests.RequestException as e:
             last = f"network {type(e).__name__}"
-            if attempt == MAX_RETRIES:
+            attempt += 1
+            if attempt >= MAX_RETRIES:
                 raise GroqLlmError("llm_failed", f"Groq chat gagal: {last}") from e
             _backoff(log, attempt, last)
             continue
@@ -206,14 +217,16 @@ def _translate_chunk(
             out = _parse_segments(content, out_field)
             if out is None:
                 last = "jawaban bukan JSON sesuai skema"
-                if attempt == MAX_RETRIES:
+                attempt += 1
+                if attempt >= MAX_RETRIES:
                     raise GroqLlmError("llm_bad_json", last)
                 _backoff(log, attempt, last)
                 continue
             missing = [idx for idx, _, _ in items if idx not in out]
             if missing:
                 last = f"LLM tidak mengembalikan idx {missing[:5]}"
-                if attempt == MAX_RETRIES:
+                attempt += 1
+                if attempt >= MAX_RETRIES:
                     raise GroqLlmError("llm_bad_json", last)
                 _backoff(log, attempt, last)
                 continue
@@ -221,7 +234,8 @@ def _translate_chunk(
             return out
 
         last = f"HTTP {r.status_code}: {r.text[:200]}"
-        if r.status_code == 429 and "daily" in (r.text or "").lower():
+        text_l = (r.text or "").lower()
+        if r.status_code == 429 and "daily" in text_l:
             # kuota harian habis — retry membakar waktu tanpa hasil (§31: fail-fast)
             raise GroqLlmError(
                 "groq_daily_quota",
@@ -237,19 +251,27 @@ def _translate_chunk(
             del body["response_format"]
             continue
         if r.status_code == 429 or r.status_code >= 500:
-            if attempt == MAX_RETRIES:
-                raise GroqLlmError("llm_rate_limit" if r.status_code == 429 else "llm_failed", last)
-            ra = (getattr(r, "headers", None) or {}).get("retry-after")
-            wait = None
-            try:
-                wait = float(ra) if ra else None
-            except ValueError:
-                wait = None
-            _backoff(log, attempt, last, wait=wait)
+            if r.status_code == 429:
+                rate_hits += 1
+                if rate_hits > MAX_RATE_RETRIES:
+                    raise GroqLlmError("llm_rate_limit", last)
+                ra = (getattr(r, "headers", None) or {}).get("retry-after")
+                try:
+                    wait = float(ra) if ra else None
+                except ValueError:
+                    wait = None
+                if wait is None:
+                    # TPM/RPM: jendela reset per menit — tunggu penuh, bukan
+                    # backoff buta (insiden §36: 429 TPM 8000 gpt-oss-120b)
+                    wait = TPM_WINDOW_S if "per minute" in text_l or "tpm" in text_l else None
+                _backoff(log, rate_hits, last, wait=wait, cap=90.0)
+                continue
+            attempt += 1
+            if attempt >= MAX_RETRIES:
+                raise GroqLlmError("llm_failed", last)
+            _backoff(log, attempt, last)
             continue
         raise GroqLlmError("llm_failed", last)
-
-    raise GroqLlmError("llm_failed", f"Groq chat gagal setelah {MAX_RETRIES} percobaan: {last}")
 
 
 def _content_of(r: requests.Response) -> str:

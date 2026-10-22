@@ -1342,6 +1342,42 @@ def test_groq_llm_kuota_harian_fail_fast(monkeypatch):
     assert not slept
 
 
+def test_groq_llm_429_tpm_tunggu_jendela_penuh(monkeypatch):
+    # insiden §36 nyata: TPM 8000 gpt-oss-120b — backoff buta 2/4/8s mati
+    # sebelum jendela 60s berganti; retry TPM wajib menunggu ~60s
+    from engine import groq_llm
+
+    class R429TPM:
+        status_code = 429
+        text = (
+            '{"error":{"message":"Rate limit reached for model `openai/gpt-oss-120b` '
+            "in organization `org_x` service tier `on_demand` on tokens per minute "
+            '(TPM): Limit 8000, Used 5540, Requested 3175."}}'
+        )
+
+    class R200:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": '{"segments":[{"idx":0,"text_en":"Hi."}]}'}}]
+            }
+
+    calls = {"n": 0}
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        return R429TPM() if calls["n"] == 1 else R200()
+
+    slept = []
+    monkeypatch.setattr(groq_llm.requests, "post", fake_post)
+    monkeypatch.setattr(groq_llm.time, "sleep", lambda s: slept.append(s))
+    out = groq_llm.translate_segments(LOG, "k", [(0, "Hai.", 50)])
+    assert out == {0: "Hi."}
+    assert calls["n"] == 2
+    assert len(slept) == 1 and 60.0 <= slept[0] <= 63.0  # jendela TPM penuh
+
+
 def test_groq_llm_retry_after_429_dihormati(monkeypatch):
     from engine import groq_llm
 
@@ -1369,4 +1405,5 @@ def test_groq_llm_retry_after_429_dihormati(monkeypatch):
     monkeypatch.setattr(groq_llm.time, "sleep", lambda s: slept.append(s))
     out = groq_llm.translate_segments(LOG, "k", [(0, "Hai.", 50)])
     assert out == {0: "Hi."}
-    assert slept == [7.0]  # header retry-after, bukan backoff buta
+    # header retry-after dihormati (+ jitter anti-stampede 0–1.5s)
+    assert len(slept) == 1 and 7.0 <= slept[0] <= 8.5
