@@ -714,17 +714,28 @@ def test_synth_one_piper_13_pakai_synthesize_wav(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_upload_proxy_mengirim_signature_hmac(tmp_path, monkeypatch):
+def test_upload_proxy_protokol2_chunked_dan_signature(tmp_path, monkeypatch):
     import hashlib
     import hmac as hmac_mod
 
     from engine import upload as upload_mod
 
     p = tmp_path / "hasil.mp4"
-    p.write_bytes(b"x" * 2048)
-    captured = {}
+    p.write_bytes(b"x" * (8 * 1024 * 1024 + 100))  # 2 chunk
+    captured: dict = {"puts": []}
 
-    class R:
+    class RInit:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"ok": True, "session": "SESS.BLOB", "chunk_bytes": 8 * 1024 * 1024}
+
+    class R204:
+        status_code = 204
+        text = ""
+
+    class RFinal:
         status_code = 200
         text = ""
 
@@ -732,16 +743,21 @@ def test_upload_proxy_mengirim_signature_hmac(tmp_path, monkeypatch):
             return {
                 "drive_file_id": "fid123",
                 "drive_web_url": "https://drive.google.com/file/d/fid123/view",
-                "bytes": 2048,
+                "bytes": 8 * 1024 * 1024 + 100,
             }
 
-    def fake_post(url, data=None, files=None, timeout=None, headers=None):
-        captured["url"] = url
-        captured["data"] = data
-        captured["headers"] = headers
-        return R()
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["init"] = {"url": url, "json": json, "headers": headers}
+        return RInit()
+
+    def fake_put(url, data=None, headers=None, timeout=None):
+        captured["puts"].append((headers["content-range"], len(data)))
+        if len(captured["puts"]) == 1:
+            return R204()
+        return RFinal()
 
     monkeypatch.setattr(upload_mod.requests, "post", fake_post)
+    monkeypatch.setattr(upload_mod.requests, "put", fake_put)
     res = upload_mod.upload_result(
         LOG,
         p,
@@ -751,11 +767,75 @@ def test_upload_proxy_mengirim_signature_hmac(tmp_path, monkeypatch):
         job_id="j1",
         auth_secret="sekret",  # noqa: S106 — secret dummy utk test
     )
+    total = 8 * 1024 * 1024 + 100
     sha = hashlib.sha256(p.read_bytes()).hexdigest()
     expect = "sha256=" + hmac_mod.new(b"sekret", f"j1.{sha}".encode(), hashlib.sha256).hexdigest()
-    assert captured["headers"]["x-inggrisin-signature"] == expect
-    assert captured["data"]["sha256"] == sha
-    assert res.drive_file_id == "fid123" and res.mode == "proxy"
+    assert captured["init"]["headers"]["x-inggrisin-signature"] == expect
+    assert captured["init"]["headers"]["x-inggrisin-protocol"] == "2"
+    assert captured["init"]["json"]["total_bytes"] == total
+    assert captured["puts"] == [
+        (f"bytes 0-{8 * 1024 * 1024 - 1}/{total}", 8 * 1024 * 1024),
+        (f"bytes {8 * 1024 * 1024}-{total - 1}/{total}", 100),
+    ]
+    assert res.drive_file_id == "fid123" and res.mode == "proxy-chunked"
+
+
+def test_upload_proxy_chunk_resume_setelah_gagal(tmp_path, monkeypatch):
+    from engine import upload as upload_mod
+
+    p = tmp_path / "hasil.mp4"
+    p.write_bytes(b"y" * (8 * 1024 * 1024 + 100))
+    total = 8 * 1024 * 1024 + 100
+    state = {"puts": 0}
+
+    class RInit:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"ok": True, "session": "S.B", "chunk_bytes": 8 * 1024 * 1024}
+
+    class R204:
+        status_code = 204
+        text = ""
+
+    class R500:
+        status_code = 500
+        text = "boom"
+
+    class RStatus:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"ok": True, "received": 8 * 1024 * 1024}  # chunk-1 sudah masuk
+
+    class RFinal:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"drive_file_id": "f9", "drive_web_url": "u", "bytes": total}
+
+    def fake_put(url, data=None, headers=None, timeout=None):
+        rng = headers["content-range"]
+        if rng == f"bytes */{total}":
+            return RStatus()
+        state["puts"] += 1
+        if state["puts"] == 2:  # chunk kedua gagal sekali
+            return R500()
+        return R204() if state["puts"] == 1 else RFinal()
+
+    monkeypatch.setattr(
+        upload_mod.requests, "post", lambda url, json=None, headers=None, timeout=None: RInit()
+    )
+    monkeypatch.setattr(upload_mod.requests, "put", fake_put)
+    monkeypatch.setattr(upload_mod.time, "sleep", lambda s: None)
+    res = upload_mod.upload_result(
+        LOG, p, proxy_url="u", filename="h.mp4", content_type="video/mp4", job_id="j1"
+    )
+    assert res.drive_file_id == "f9"
+    assert res.mode == "proxy-chunked"
 
 
 # ---------------------------------------------------------------------------
