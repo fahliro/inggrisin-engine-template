@@ -192,13 +192,24 @@ def extract(
                 "remux-m4a",
             )
             size = m4a.stat().st_size if m4a.exists() else 0
-            if 0 < size <= TARGET_AUDIO_BYTES:
+            if size > 0:
+                bps = size / max(duration, 1.0)
+                sec = chunk_seconds_for(size, duration)
+                if size <= TARGET_AUDIO_BYTES or bps * sec <= TARGET_AUDIO_BYTES:
+                    mode = (
+                        "satu request" if size <= TARGET_AUDIO_BYTES else f"di-chunk copy @ {sec}s"
+                    )
+                    log.info(
+                        f"extract audio: remux aac→m4a tanpa re-encode ({size / 1e6:.1f} MB) — "
+                        f"bitstream identik sumber (§38), {mode}"
+                    )
+                    return m4a, duration
                 log.info(
-                    f"extract audio: remux aac→m4a tanpa re-encode ({size / 1e6:.1f} MB) — "
-                    "bitstream identik sumber (§38)"
+                    f"remux m4a {size / 1e6:.1f} MB @ {bps / 1000:.0f} kbps — chunk copy tak "
+                    "muat batas request Groq; fallback opus adaptif"
                 )
-                return m4a, duration
-            log.info(f"remux m4a {size / 1e6:.1f} MB melebihi batas — fallback opus adaptif")
+            else:
+                log.info("remux m4a kosong/gagal — fallback opus adaptif")
         except AudioError as e:
             log.warn(f"remux m4a gagal ({e.message[:120]}) — fallback opus adaptif")
 
@@ -249,20 +260,39 @@ def extract(
     return dst, duration
 
 
+def chunk_seconds_for(size_bytes: int, duration_s: float) -> int:
+    """Durasi chunk terpanjang sehingga tiap chunk copy ≤ TARGET_AUDIO_BYTES (§38).
+
+    Chunk dipotong stream-copy (lossless), jadi ukuran chunk = bitrate × durasi.
+    Di-clamp [60, CHUNK_SECONDS].
+    """
+    if size_bytes <= 0 or duration_s <= 0:
+        return CHUNK_SECONDS
+    bps = size_bytes / duration_s
+    if bps <= 0:
+        return CHUNK_SECONDS
+    sec = int((TARGET_AUDIO_BYTES * 0.9) / bps)
+    return max(60, min(CHUNK_SECONDS, sec))
+
+
 def needs_chunking(path: Path) -> bool:
     return path.stat().st_size > TARGET_AUDIO_BYTES
 
 
 def split_chunks(
-    log: Logger, src: Path, out_dir: Path, chunk_seconds: int = CHUNK_SECONDS
+    log: Logger, src: Path, out_dir: Path, chunk_seconds: int | None = None
 ) -> list[Path]:
     """
     Potong audio jadi beberapa file. `segment` dengan `-c copy` tidak
-    encode ulang → cepat dan lossless.
+    encode ulang → cepat dan lossless. Kontainer chunk mengikuti sumber
+    (m4a remux §38 tetap aac; fallback opus tetap opus) dan durasi chunk
+    otomatis via chunk_seconds_for supaya tiap chunk ≤ TARGET_AUDIO_BYTES.
     """
     _require_ffmpeg()
+    if chunk_seconds is None:
+        chunk_seconds = chunk_seconds_for(src.stat().st_size, probe(log, src).duration_s)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pattern = str(out_dir / "chunk_%04d.opus")
+    pattern = str(out_dir / f"chunk_%04d{src.suffix}")
     _run(
         log,
         [

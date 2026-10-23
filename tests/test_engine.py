@@ -1501,3 +1501,17 @@ def test_split_tetap_pecah_kalimat_jauh_lewat_batas():
     out = srt.split_long_rows(rows)
     assert len(out) >= 2
     assert all(len(r["text_id"]) <= 90 for r in out)
+
+
+def test_chunk_seconds_for_menjaga_chunk_di_bawah_batas():
+    from engine import audio as audio_mod
+
+    # ≈128 kbps (29 MB / 30 mnt): chunk 600s ≈ 9,6 MB → aman, pakai CHUNK_SECONDS
+    assert audio_mod.chunk_seconds_for(29 * 1024 * 1024, 1800) == audio_mod.CHUNK_SECONDS
+    # bitrate lebih tinggi: tiap chunk wajib ≤ TARGET
+    size = 100 * 1024 * 1024
+    sec = audio_mod.chunk_seconds_for(size, 1800)
+    assert sec * (size / 1800) <= audio_mod.TARGET_AUDIO_BYTES
+    assert 60 <= sec <= audio_mod.CHUNK_SECONDS
+    # input degenerat aman
+    assert audio_mod.chunk_seconds_for(0, 0) == audio_mod.CHUNK_SECONDS
