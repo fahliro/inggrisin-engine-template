@@ -54,6 +54,7 @@ class Probe:
     format_name: str
     video_codec: str | None
     size_bytes: int
+    audio_codec: str | None = None
 
 
 def _require_ffmpeg() -> None:
@@ -121,6 +122,7 @@ def probe(log: Logger, path: Path) -> Probe:
         format_name=str(fmt.get("format_name", "unknown")),
         video_codec=(video_streams[0].get("codec_name") if video_streams else None),
         size_bytes=int(fmt.get("size") or path.stat().st_size),
+        audio_codec=str(audio_streams[0].get("codec_name") or "") or None,
     )
 
 
@@ -156,8 +158,49 @@ def extract(
     Mengembalikan (path, durasi). Path bisa = dst, atau tetap dst (selalu dst).
     """
     _require_ffmpeg()
-    p = probe(log, src) if duration_hint is None else None
-    duration = duration_hint if duration_hint is not None else (p.duration_s if p else 0.0)
+    p = probe(log, src)
+    duration = duration_hint if duration_hint is not None else p.duration_s
+
+    # docs/01 §38: prioritas pertama = bitstream IDENTIK sumber (remux tanpa
+    # re-encode): decoding Whisper jadi sama dengan Groq Playground yang
+    # menerima file asli, sehingga potongan segmen lebih tepat (eksperimen
+    # A/B job_8eYM1iEFdbdtslhG: re-encode opus menggeser batas 20-140 ms dan
+    # menggabung tiga cut yang dibuat Playground). Fallback: opus adaptif bila
+    # codec bukan aac atau hasil > TARGET_AUDIO_BYTES (video panjang).
+    if p.audio_codec == "aac":
+        m4a = dst.with_suffix(".m4a")
+        try:
+            _run(
+                log,
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(src),
+                    "-vn",
+                    "-sn",
+                    "-dn",
+                    "-c:a",
+                    "copy",
+                    "-map_metadata",
+                    "-1",
+                    str(m4a),
+                ],
+                "remux-m4a",
+            )
+            size = m4a.stat().st_size if m4a.exists() else 0
+            if 0 < size <= TARGET_AUDIO_BYTES:
+                log.info(
+                    f"extract audio: remux aac→m4a tanpa re-encode ({size / 1e6:.1f} MB) — "
+                    "bitstream identik sumber (§38)"
+                )
+                return m4a, duration
+            log.info(f"remux m4a {size / 1e6:.1f} MB melebihi batas — fallback opus adaptif")
+        except AudioError as e:
+            log.warn(f"remux m4a gagal ({e.message[:120]}) — fallback opus adaptif")
 
     kbps, sr = _choose_settings(duration)
     log.info(f"extract audio: {duration:.0f}s → {kbps}kbps @ {sr}Hz mono opus")
