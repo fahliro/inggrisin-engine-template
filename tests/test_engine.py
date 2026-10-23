@@ -1480,3 +1480,24 @@ def test_prompt_terjemahan_memuat_aturan_potongan_sumber():
 
     assert "MIRROR THE SOURCE CUTS" in groq_llm._SYSTEM_EN
     assert "never complete a clause early" in groq_llm._SYSTEM_EN
+
+
+def test_split_pertahankan_kalimat_utuh_sedikit_lewat_batas():
+    # §37: satu kalimat 93 char (>90, ≤100) TIDAK dipenggal di tengah frasa
+    kalimat = (
+        "Di dalam pembuluh darah, aliran sirkulasi melambat, pemecahan gula dan "
+        "lemak pun terhambat,"
+    )
+    assert 90 < len(kalimat) <= 100
+    rows = [{"idx": 0, "start": 34.0, "end": 41.0, "text_id": kalimat, "text_en": ""}]
+    out = srt.split_long_rows(rows)
+    assert len(out) == 1
+    assert out[0]["text_id"] == kalimat
+
+
+def test_split_tetap_pecah_kalimat_jauh_lewat_batas():
+    panjang = "Satu kalimat sangat panjang tanpa titik yang jelas " * 4  # ~212 char
+    rows = [{"idx": 0, "start": 0.0, "end": 10.0, "text_id": panjang.strip(), "text_en": ""}]
+    out = srt.split_long_rows(rows)
+    assert len(out) >= 2
+    assert all(len(r["text_id"]) <= 90 for r in out)

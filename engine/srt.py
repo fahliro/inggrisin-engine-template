@@ -147,6 +147,11 @@ def validate_srt_size(srt: str) -> None:
 # cue. Pemecahan deterministik di batas kalimat, timing proporsional char,
 # teks dua bahasa dipecah paralel supaya baris tetap sejajar 1:1.
 MAX_SUB_CHARS = 90
+# §37: kalimat utuh yang lewat batas hanya sedikit TIDAK dipenggal di tengah —
+# potongan di tengah frasa (mis. "…lemak pun | terhambat, …") membuat titik
+# potong mustahil dicerminkan terjemahan; lebih baik satu baris sedikit lebih
+# panjang daripada isi geser satu klausa.
+SENTENCE_INTEGRITY_SLACK = 10
 _MAX_GROUPS = 12
 _SENT_RE = re.compile(r"(?<=[.!?…])\s+")
 
@@ -169,7 +174,10 @@ def _sentence_chunks(text: str, max_chars: int) -> list[str]:
         chunks.append(cur)
     out: list[str] = []
     for c in chunks:
-        while len(c) > max_chars:  # satu kalimat > batas: potong di batas kata
+        if len(c) <= max_chars + SENTENCE_INTEGRITY_SLACK:
+            out.append(c)  # kalimat utuh (atau sedikit lewat): pertahankan (§37)
+            continue
+        while len(c) > max_chars:  # satu kalimat jauh > batas: potong di batas kata
             cut = c.rfind(" ", 0, max_chars)
             if cut < max_chars // 2:
                 cut = max_chars
@@ -287,8 +295,11 @@ def split_long_rows(rows: list[dict], max_chars: int = MAX_SUB_CHARS) -> list[di
         driver = ten if en_driver else tid
         other = tid if en_driver else ten
         grp_dr = _group_capped(_sentence_chunks(driver, max_chars), max_chars)
-        k = min(_MAX_GROUPS, max(2, len(grp_dr)))
-        grp_dr = _fit_count(grp_dr, k, max_chars)
+        if len(grp_dr) == 1 and len(grp_dr[0]) <= max_chars + SENTENCE_INTEGRITY_SLACK:
+            k = 1  # §37: satu kalimat utuh sedikit di atas batas — jangan dipenggal
+        else:
+            k = min(_MAX_GROUPS, max(2, len(grp_dr)))
+            grp_dr = _fit_count(grp_dr, k, max_chars)
         grp_ot = _fit_count(
             _group_capped(_sentence_chunks(other, max_chars), max_chars), k, max_chars
         )
