@@ -351,7 +351,8 @@ def run_first(
         )
 
     tr = _transcribe(
-        "id",
+        None,  # auto-detect primer (§38-eksperimen: potongan segmen lebih tepat
+        # sesuai Groq Playground; forced-id turun jadi telinga cadangan guard)
         on_chunk=lambda i, n: prog.send(
             "transcribing", f"Mendengarkan bagian {i}/{n}", percent=20 + int(10 * i / max(n, 1))
         ),
@@ -367,13 +368,13 @@ def run_first(
     # degenerat → gagal jelas, karangan tidak dipublikasikan (§22).
     if transcribe.transcript_degenerate(tr, total_duration):
         log.warn(
-            f"transkrip forced-id dicurigai degenerat ({len(tr.text.strip())} char "
-            f"untuk {total_duration:.0f}s) — retry transcribe auto-detect"
+            f"transkrip auto-detect dicurigai degenerat ({len(tr.text.strip())} char "
+            f"untuk {total_duration:.0f}s) — retry transcribe forced-id"
         )
-        tr_auto = _transcribe(None)
+        tr_auto = _transcribe("id")
         if tr_auto.text.strip() and not transcribe.transcript_degenerate(tr_auto, total_duration):
             log.warn(
-                f"transkrip auto-detect dipakai: language={tr_auto.language}, "
+                f"transkrip forced-id dipakai: language={tr_auto.language}, "
                 f"{len(tr_auto.segments)} segmen"
             )
             tr = tr_auto
@@ -385,6 +386,11 @@ def run_first(
                 "teks karangan (§22)."
             )
 
+    # jejak mentah utk diagnosis pemotongan (§38): batas segmen persis Whisper
+    log.info(
+        "segmen transkrip: "
+        + " | ".join(f"{s.start:.2f}-{s.end:.2f} {(s.text or '')[:48]}" for s in tr.segments)
+    )
     id_segs = [s for s in tr.segments if (s.text or "").strip()]
     shutil.rmtree(cfg.chunks_dir, ignore_errors=True)
 
