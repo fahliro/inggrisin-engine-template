@@ -217,6 +217,50 @@ def _fit_count(groups: list[str], k: int, max_chars: int) -> list[str]:
     return groups
 
 
+def merge_short_tails(
+    rows: list[dict],
+    # plafon gabung lebih longgar dari plafon pecah: sisi yang memanjang adalah
+    # teks sumber (referensi halaman job); sisi burn-in/dub (EN) tetap diikat
+    # budget per baris oleh groq_llm (§36/§37).
+    max_chars: int = MAX_SUB_CHARS + 15,
+    max_tail_chars: int = 15,
+    max_gap_s: float = 0.6,
+) -> list[dict]:
+    """Gabungkan fragmen ekor pendek ke baris sebelumnya (§37 lapis kedua).
+
+    Setelah pemecahan, kadang tersisa baris-ekor satu-dua kata berawalan huruf
+    kecil ("terukur.", "met.", "dan males.") yang bukan kalimat utuh. Bila
+    diterjemahkan terpisah, LLM wajar menyerap maknanya ke baris sebelumnya dan
+    menyisakan keluaran degenerat (".") untuk baris ekor ini (insiden
+    job_n8ERdjbDKVqpUGyd percobaan pertama §37). Aturan gabung: ekor ≤ 15 char,
+    berawalan huruf kecil (fragmen lanjutan, bukan kalimat baru seperti
+    "Salam sehat!"), celah timing ≤ 0,6 s, dan hasil gabung ≤ max_chars.
+    idx di-reindex. Baris lain dikembalikan apa adanya.
+    """
+    out: list[dict] = []
+    for r in rows:
+        tid = normalize_text(r.get("text_id"))
+        prev = out[-1] if out else None
+        if (
+            prev is not None
+            and 0 < len(tid) <= max_tail_chars
+            and tid[:1].islower()
+            and float(r["start"]) - float(prev["end"]) <= max_gap_s
+            and len(normalize_text(prev.get("text_id"))) + 1 + len(tid) <= max_chars
+        ):
+            prev["text_id"] = f"{normalize_text(prev.get('text_id'))} {tid}".strip()
+            if (prev.get("text_en") or "").strip() and (r.get("text_en") or "").strip():
+                prev["text_en"] = (
+                    f"{normalize_text(prev.get('text_en'))} {tid and normalize_text(r.get('text_en'))}".strip()
+                )
+            prev["end"] = r["end"]
+            continue
+        out.append({**r, "text_id": tid})
+    for i, r in enumerate(out):
+        r["idx"] = i
+    return out
+
+
 def split_long_rows(rows: list[dict], max_chars: int = MAX_SUB_CHARS) -> list[dict]:
     """Pecah baris subtitle yang terlalu panjang jadi beberapa baris sejajar.
 

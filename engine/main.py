@@ -402,6 +402,10 @@ def run_first(
     rows = srt.split_long_rows(rows)  # driver otomatis = teks sumber (EN kosong)
     if len(rows) != n_rows:
         log.warn(f"subtitle dipecah demi keterbacaan: {n_rows} → {len(rows)} baris")
+    n_before_tail = len(rows)
+    rows = srt.merge_short_tails(rows)  # fragmen ekor ("terukur.", "met.") ikut baris sebelumnya
+    if len(rows) != n_before_tail:
+        log.info(f"fragmen ekor pendek digabung: {n_before_tail} → {len(rows)} baris")
 
     step_ref[0] = "translate"
     prog.stage("translating", "Menerjemahkan ke Inggris (gpt-oss via Groq)")

@@ -1429,3 +1429,46 @@ def test_split_long_rows_en_kosong_alur_praterjemah():
     for a, b in zip(out, out[1:], strict=False):
         assert a["end"] == b["start"]
     assert [r["idx"] for r in out] == list(range(len(out)))
+
+
+def test_merge_short_tails_gabung_fragmen_ekor():
+    rows = [
+        {
+            "idx": 0,
+            "start": 50.44,
+            "end": 57.63,
+            "text_id": "Kabar baiknya, rantai resiko ini bisa diputus hari ini juga lewat gerakan aktif yang",
+            "text_en": "",
+        },
+        {"idx": 1, "start": 57.63, "end": 58.32, "text_id": "terukur.", "text_en": ""},
+        {"idx": 2, "start": 60.0, "end": 62.0, "text_id": "Salam sehat!", "text_en": ""},
+    ]
+    out = srt.merge_short_tails(rows)
+    assert len(out) == 2
+    assert out[0]["text_id"].endswith("gerakan aktif yang terukur.")
+    assert out[0]["end"] == 58.32  # timing ekor diserap
+    # kalimat utuh berawalan kapital TIDAK digabung
+    assert out[1]["text_id"] == "Salam sehat!"
+    assert [r["idx"] for r in out] == [0, 1]
+
+
+def test_merge_short_tails_gap_dan_batas_char():
+    # celah > 0.6s → jangan gabung (jeda ucapan nyata)
+    rows = [
+        {
+            "idx": 0,
+            "start": 0.0,
+            "end": 2.0,
+            "text_id": "Kalimat pertama yang isi baris",
+            "text_en": "",
+        },
+        {"idx": 1, "start": 5.0, "end": 5.5, "text_id": "sambungan.", "text_en": ""},
+    ]
+    assert len(srt.merge_short_tails(rows)) == 2
+    # hasil gabung melebihi max_chars → jangan gabung
+    panjang = "x " * 60
+    rows = [
+        {"idx": 0, "start": 0.0, "end": 2.0, "text_id": panjang.strip(), "text_en": ""},
+        {"idx": 1, "start": 2.0, "end": 2.5, "text_id": "ekor.", "text_en": ""},
+    ]
+    assert len(srt.merge_short_tails(rows)) == 2
