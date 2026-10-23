@@ -64,13 +64,24 @@ jobs:
       # supaya selfcheck benar-benar menangkap environment yang pincang.
       - name: Ensure ffmpeg
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
-            echo "ffmpeg tidak ada di image — instal via apt"
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg
-          else
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
             echo "ffmpeg bawaan image: $(ffmpeg -version | head -1)"
+            exit 0
           fi
+          echo "ffmpeg tidak ada di image — lapis 1: apt (dengan timeout)"
+          if sudo timeout 240 apt-get update -qq && \
+             sudo timeout 420 apt-get install -y -qq ffmpeg && \
+             command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg via apt: $(ffmpeg -version | head -1)"
+            exit 0
+          fi
+          echo "apt gagal/timeout — lapis 2: static build BtbN"
+          curl -fsSL --retry 2 --max-time 300 -o /tmp/ff.tar.xz \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf /tmp/ff.tar.xz -C /tmp
+          sudo install -m755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
+          echo "ffmpeg static: $(ffmpeg -version | head -1)"
 
       - name: Environment
         run: |
