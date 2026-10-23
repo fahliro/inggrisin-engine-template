@@ -1472,3 +1472,11 @@ def test_merge_short_tails_gap_dan_batas_char():
         {"idx": 1, "start": 2.0, "end": 2.5, "text_id": "ekor.", "text_en": ""},
     ]
     assert len(srt.merge_short_tails(rows)) == 2
+
+
+def test_prompt_terjemahan_memuat_aturan_potongan_sumber():
+    # §37: EN wajib berhenti di titik potong yang sama dengan ID (padanan audio)
+    from engine import groq_llm
+
+    assert "MIRROR THE SOURCE CUTS" in groq_llm._SYSTEM_EN
+    assert "never complete a clause early" in groq_llm._SYSTEM_EN
