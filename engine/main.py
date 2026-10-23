@@ -404,14 +404,12 @@ def run_first(
         {"idx": i, "start": s.start, "end": s.end, "text_id": s.text, "text_en": ""}
         for i, s in enumerate(id_segs)
     ]
-    n_rows = len(rows)
-    rows = srt.split_long_rows(rows)  # driver otomatis = teks sumber (EN kosong)
-    if len(rows) != n_rows:
-        log.warn(f"subtitle dipecah demi keterbacaan: {n_rows} → {len(rows)} baris")
-    n_before_tail = len(rows)
-    rows = srt.merge_short_tails(rows)  # fragmen ekor ("terukur.", "met.") ikut baris sebelumnya
-    if len(rows) != n_before_tail:
-        log.info(f"fragmen ekor pendek digabung: {n_before_tail} → {len(rows)} baris")
+    # docs/01 §39: baris = segmen Whisper 1:1 — segmentasi persis Playground.
+    # Lapisan pecah keterbacaan + gabung ekor (§32/§37) DIMATIKAN di build
+    # pertama atas permintaan user: burn-in mengandalkan wrap ASS, dan
+    # keterbacaan/audio dijaga oleh budget TTS per baris (fit/tempo), bukan
+    # dengan memecah baris. Fungsi split/gabung di srt.py tetap hidup utk
+    # alat lain & test.
 
     step_ref[0] = "translate"
     prog.stage("translating", "Menerjemahkan ke Inggris (gpt-oss via Groq)")
