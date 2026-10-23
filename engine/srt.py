@@ -225,6 +225,12 @@ def split_long_rows(rows: list[dict], max_chars: int = MAX_SUB_CHARS) -> list[di
     jumlah char teks pemandu (yang lebih panjang); teks bahasa lain dipecah
     paralel jadi k grup yang sama sehingga baris tetap 1:1. idx di-reindex.
     Baris pendek dikembalikan apa adanya (tidak ada perubahan perilaku).
+
+    Pemakaian build pertama sejak §37: dipanggil dengan text_en masih KOSONG
+    (driver otomatis teks sumber) SEBELUM terjemahan — lalu groq_llm
+    menerjemahkan 1:1 per baris sehingga isi tiap baris padan antar-bahasa.
+    Pemakaian lama (dua teks terisi, mis. alat revisi) tetap didukung: teks
+    non-driver dipecah paralel proporsional sebagai pendekatan.
     """
     out: list[dict] = []
     for r in rows:

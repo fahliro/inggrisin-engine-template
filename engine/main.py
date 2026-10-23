@@ -388,10 +388,25 @@ def run_first(
     id_segs = [s for s in tr.segments if (s.text or "").strip()]
     shutil.rmtree(cfg.chunks_dir, ignore_errors=True)
 
+    # docs/01 §37: pemecahan keterbacaan dilakukan ATAS TEKS SUMBER lebih dulu —
+    # batas baris mengikuti kalimat bahasa sumber, lalu terjemahan lahir 1:1
+    # per baris sehingga isi EN tiap baris PADAN dengan ID-nya. (Urutan lama —
+    # terjemah dulu, pecah paralel proporsional kemudian — menggeser konten EN
+    # satu klausa dari ID-nya: batas kalimat dua bahasa tak berimpit; insiden
+    # job_pCQawh1rDMasdCeP.)
+    rows = [
+        {"idx": i, "start": s.start, "end": s.end, "text_id": s.text, "text_en": ""}
+        for i, s in enumerate(id_segs)
+    ]
+    n_rows = len(rows)
+    rows = srt.split_long_rows(rows)  # driver otomatis = teks sumber (EN kosong)
+    if len(rows) != n_rows:
+        log.warn(f"subtitle dipecah demi keterbacaan: {n_rows} → {len(rows)} baris")
+
     step_ref[0] = "translate"
     prog.stage("translating", "Menerjemahkan ke Inggris (gpt-oss via Groq)")
     t = time.monotonic()
-    items = [(i, seg.text, srt.budget_of(seg.start, seg.end)) for i, seg in enumerate(id_segs)]
+    items = [(r["idx"], r["text_id"], srt.budget_of(r["start"], r["end"])) for r in rows]
     en_map = groq_llm.translate_segments(
         log,
         cfg.groq_api_key,
@@ -400,34 +415,19 @@ def run_first(
             "translating", f"Menerjemahkan bagian {i}/{n}", percent=30 + int(15 * i / max(n, 1))
         ),
     )
-    texts_en = [en_map.get(i, "") for i in range(len(id_segs))]
+    for r in rows:
+        r["text_en"] = en_map.get(r["idx"], "")
     timings["translate_s"] = round(time.monotonic() - t, 2)
-    empty = sum(1 for x in texts_en if not x)
+    empty = sum(1 for r in rows if not r["text_en"])
     report.stage_done(
         "translate",
         timings["translate_s"],
-        segments=len(id_segs),
+        segments=len(rows),
         via="groq-llm",
         empty=empty,
     )
-    if empty == len(id_segs):
+    if empty == len(rows):
         raise RuntimeError("Terjemahan LLM kosong — tidak ada teks Inggris yang dihasilkan")
-
-    # baris subtitle: pecah yang terlalu panjang demi keterbacaan (docs/01 §32)
-    rows = [
-        {
-            "idx": i,
-            "start": s.start,
-            "end": s.end,
-            "text_id": s.text,
-            "text_en": texts_en[i],
-        }
-        for i, s in enumerate(id_segs)
-    ]
-    n_rows = len(rows)
-    rows = srt.split_long_rows(rows)
-    if len(rows) != n_rows:
-        log.warn(f"subtitle dipecah demi keterbacaan: {n_rows} → {len(rows)} baris")
 
     # manifest = sumber kebenaran timing, dikunci mulai sekarang
     manifest = {

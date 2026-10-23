@@ -1407,3 +1407,25 @@ def test_groq_llm_retry_after_429_dihormati(monkeypatch):
     assert out == {0: "Hi."}
     # header retry-after dihormati (+ jitter anti-stampede 0–1.5s)
     assert len(slept) == 1 and 7.0 <= slept[0] <= 8.5
+
+
+def test_split_long_rows_en_kosong_alur_praterjemah():
+    # §37: build pertama memecah baris SAAT text_en masih kosong — driver
+    # otomatis teks sumber, grup EN tetap kosong utk diisi terjemahan 1:1
+    asli = (
+        "Di dalam pembuluh darah, aliran sirkulasi melambat, pemecahan gula dan "
+        "lemak pun terhambat, risiko hipertensi, diabetes, penyakit jantung, dan "
+        "kematian dini meningkat 20 sampai 30 persen."
+    )
+    rows = [{"idx": 0, "start": 34.0, "end": 50.44, "text_id": asli, "text_en": ""}]
+    out = srt.split_long_rows(rows)
+    assert len(out) >= 2
+    # semua slot EN kosong siap diterjemahkan per baris
+    assert all(r["text_en"] == "" for r in out)
+    # gabungan fragmen ID = teks asli utuh & urut
+    assert " ".join(r["text_id"] for r in out) == asli
+    # timing kontigu menempel batas baris sumber
+    assert out[0]["start"] == 34.0 and out[-1]["end"] == 50.44
+    for a, b in zip(out, out[1:], strict=False):
+        assert a["end"] == b["start"]
+    assert [r["idx"] for r in out] == list(range(len(out)))
