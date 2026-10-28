@@ -96,6 +96,7 @@ class Config:
     github_run_url: str
 
     options: dict = field(default_factory=dict)
+    output_aspect: str = "9:16"
 
     @staticmethod
     def load(workspace: Path, out_dir: Path, report_path: Path) -> Config:
@@ -142,6 +143,13 @@ class Config:
                 f"voice={voice!r} tidak dikenal; pilihan: {', '.join(sorted(VOICES))}",
             )
 
+        output_aspect = (opt("INGGRISIN_OUTPUT_ASPECT", "9:16") or "9:16").strip()
+        if output_aspect not in ("9:16", "source"):
+            raise ConfigError(
+                "contract_mismatch",
+                f"output_aspect={output_aspect!r} tidak dikenal; pilihan: 9:16, source",
+            )
+
         cfg = Config(
             job_id=req("INGGRISIN_JOB_ID"),
             idempotency_key=opt("INGGRISIN_IDEMPOTENCY_KEY") or req("INGGRISIN_JOB_ID"),
@@ -162,6 +170,7 @@ class Config:
             whisper_model=opt("INGGRISIN_WHISPER_MODEL", "whisper-large-v3"),
             llm_model=opt("INGGRISIN_LLM_MODEL", "openrouter/free"),
             voice=voice,
+            output_aspect=output_aspect,
             drive_folder_id=req("INGGRISIN_DRIVE_FOLDER_ID"),
             dubbed_file_name=req("INGGRISIN_DUBBED_FILE_NAME"),
             result_upload_url=opt("INGGRISIN_RESULT_UPLOAD_URL"),

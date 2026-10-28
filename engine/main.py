@@ -276,7 +276,7 @@ def _upload(
         "drive_web_url": res.drive_web_url or "",
         "bytes": int(res.bytes),
         "format": "mp4",
-        "aspect": "9:16",
+        "aspect": cfg.output_aspect if cfg.output_aspect == "source" else "9:16",
         "overwritten": bool(overwrite_file_id),
     }
 
@@ -308,7 +308,13 @@ def run_first(
     aspect = vertical.classify_aspect(vp.width, vp.height)
     total_duration = vp.duration_s or 0.0
     log.info(f"video: {vp.width}x{vp.height} ({aspect}), {total_duration:.1f}s")
-    target_wh = vertical.pick_target_size(vp.width, vp.height)
+    if cfg.output_aspect == "source" and vp.width > 1 and vp.height > 1:
+        # output aspek asli: kanvas = dimensi sumber (genap), tanpa komposisi
+        # vertikal; subtitle tetap burn-in di kanvas yang sama.
+        target_wh = (vp.width - vp.width % 2, vp.height - vp.height % 2)
+        aspect = "source"
+    else:
+        target_wh = vertical.pick_target_size(vp.width, vp.height)
     log.info(f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)")
 
     step_ref[0] = "extract"
@@ -557,7 +563,13 @@ def run_revision(
     vp = vertical.probe_video(log, cfg.source_path)
     aspect = vertical.classify_aspect(vp.width, vp.height)
     total_duration = max(vp.duration_s or 0.0, float(manifest.get("durationSeconds") or 0.0))
-    target_wh = vertical.pick_target_size(vp.width, vp.height)
+    if cfg.output_aspect == "source" and vp.width > 1 and vp.height > 1:
+        # output aspek asli: kanvas = dimensi sumber (genap), tanpa komposisi
+        # vertikal; subtitle tetap burn-in di kanvas yang sama.
+        target_wh = (vp.width - vp.width % 2, vp.height - vp.height % 2)
+        aspect = "source"
+    else:
+        target_wh = vertical.pick_target_size(vp.width, vp.height)
     log.info(f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)")
 
     # tempo dihitung ulang deterministik dari teks (TANPA LLM) — sama seperti

@@ -77,6 +77,11 @@ on:
         required: false
         type: string
         default: 'en_US-lessac-medium'
+      output_aspect:
+        description: 'Aspek output: 9:16 (vertikal) atau source (aspek asli)'
+        required: false
+        type: string
+        default: '9:16'
       mode:
         description: 'first = pipeline penuh | revision = SRT pass-through (TANPA Groq/LLM)'
         required: false
@@ -341,6 +346,7 @@ jobs:
           INGGRISIN_WHISPER_MODEL: ${{ inputs.whisper_model }}
           INGGRISIN_LLM_MODEL: ${{ inputs.llm_model }}
           INGGRISIN_VOICE: ${{ inputs.voice }}
+          INGGRISIN_OUTPUT_ASPECT: ${{ inputs.output_aspect }}
           INGGRISIN_MODE: ${{ inputs.mode }}
           INGGRISIN_REVISION_NUMBER: ${{ inputs.revision_number }}
           INGGRISIN_REVISIONS_URL: ${{ inputs.revisions_url }}

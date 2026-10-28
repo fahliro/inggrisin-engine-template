@@ -197,7 +197,10 @@ def build_render_cmd(
             ("2500k", "5000k", "192k") if h >= TARGET_H else ("1500k", "3000k", "192k")
         )
     sub = f"subtitles='{_escape_filter_path(ass)}'"
-    if aspect in ("horizontal", "square", "unknown"):
+    if aspect == "source":
+        # aspek asli: kanvas == dimensi sumber → scale no-op, subtitle burn-in
+        fc = f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,{sub}[vout]"
+    elif aspect in ("horizontal", "square", "unknown"):
         # latar blur: split → latar diperbesar+d crop+blur, subjek di tengah
         fc = (
             f"[0:v]split=2[bg][fg];"
