@@ -16,6 +16,7 @@ Fungsi pembangun command dipisah dari eksekusi supaya bisa diuji tanpa ffmpeg.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,6 +100,24 @@ def pick_target_size(src_w: int, src_h: int) -> tuple[int, int]:
     if min(src_w, src_h) >= TARGET_W:
         return TARGET_W, TARGET_H
     return TARGET_W_SMALL, TARGET_H_SMALL
+
+
+def ratio_label(width: int, height: int) -> str:
+    """Label rasio kanvas keluaran — untuk field INFORMASIONAL `result.aspect`.
+
+    Bukan input keputusan render apa pun; hanya laporan ke app supaya log/DB
+    menyebut bentuk video yang benar-benar dihasilkan (output "Asli" bisa
+    16:9, 1:1, 4:5, dst). Rasio direduksi dengan gcd; kombinasi ganjil
+    (mis. 854x480 → 427:240) dilaporkan 'custom' daripada pecahan panjang
+    yang tidak bisa dibaca orang.
+    """
+    if width <= 0 or height <= 0:
+        return "unknown"
+    g = math.gcd(width, height) or 1
+    w, h = width // g, height // g
+    if w <= 40 and h <= 40:
+        return f"{w}:{h}"
+    return "custom"
 
 
 # ---------------------------------------------------------------------------

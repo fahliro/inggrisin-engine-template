@@ -112,6 +112,40 @@ def send(
     return False
 
 
+# Nilai sah `manifest.sourceAspect` di kontrak app. Engine kadang perlu
+# menormalkan field ini (mis. engine lama menulis 'source') supaya HASIL tidak
+# hilang hanya karena label informasional.
+KNOWN_SOURCE_ASPECTS = ("vertical", "horizontal", "square", "unknown")
+
+
+def normalize_informational(payload: dict[str, Any]) -> dict[str, Any]:
+    """Salinan payload dengan field INFORMASIONAL dibuang/dinormalkan.
+
+    Dipakai sebagai percobaan terakhir ketika app menolak hasil (422
+    schema_mismatch). Video sudah terunggah ke Drive user pada titik itu, jadi
+    kehilangan hasil hanya karena label rasio (`result.aspect`), format, atau
+    klasifikasi aspek adalah kerugian nyata (insiden job_eA7QKp3RhLvdXfSH).
+
+    Yang TIDAK disentuh: identitas & isi hasil — job_id, status, revision_number,
+    drive_file_id, drive_file_name, bytes, subtitles, manifest.segments, error.
+    Field yang dibuang punya `default()` di skema app, jadi app tetap bisa parse.
+    """
+    out = json.loads(json.dumps(payload))  # deep copy
+    res = out.get("result")
+    if isinstance(res, dict):
+        res.pop("aspect", None)
+        res.pop("format", None)
+        man = res.get("manifest")
+        if isinstance(man, dict) and man.get("sourceAspect") not in KNOWN_SOURCE_ASPECTS:
+            man["sourceAspect"] = "unknown"
+    out.pop("runner", None)
+    if not isinstance(out.get("contract_version"), str):
+        out["contract_version"] = "unknown"
+    if not isinstance(out.get("finished_at"), int):
+        out["finished_at"] = int(time.time() * 1000)
+    return out
+
+
 def shrink_to_fit(payload: dict[str, Any], log: Logger) -> dict[str, Any]:
     """
     Potong `segments` sampai payload muat di bawah MAX_BODY_BYTES.

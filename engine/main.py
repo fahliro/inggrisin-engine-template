@@ -243,6 +243,34 @@ def _tts_to_render(
     )
 
 
+def _resolve_canvas(cfg: Config, vp: vertical.VideoProbe) -> tuple[str, tuple[int, int]]:
+    """(aspect untuk RENDER, kanvas keluaran) menurut pilihan output user.
+
+    'source' → kanvas = dimensi sumber (digenapkan), tanpa komposisi vertikal.
+    selain itu → kanvas 9:16 ber-tier (§35), aspect render = klasifikasi sumber
+    (menentukan blur/pad di build_render_cmd).
+
+    PENTING: nilai pertama HANYA untuk filter ffmpeg. `manifest.sourceAspect`
+    harus tetap klasifikasi sumber (vertical|horizontal|square|unknown) — dulu
+    satu variabel `aspect` dipakai untuk keduanya, sehingga output "Asli"
+    menulis 'source' ke manifest & result.aspect dan app menolak callback
+    (422 schema_mismatch) walau video sudah terunggah (job_eA7QKp3RhLvdXfSH).
+    """
+    if cfg.output_aspect == "source" and vp.width > 1 and vp.height > 1:
+        return "source", (vp.width - vp.width % 2, vp.height - vp.height % 2)
+    return (
+        vertical.classify_aspect(vp.width, vp.height),
+        vertical.pick_target_size(vp.width, vp.height),
+    )
+
+
+def _aspect_label(cfg: Config, target_wh: tuple[int, int]) -> str:
+    """Label rasio keluaran untuk callback (informasional, lihat ratio_label)."""
+    if cfg.output_aspect == "source":
+        return vertical.ratio_label(target_wh[0], target_wh[1])
+    return "9:16"
+
+
 def _upload(
     cfg: Config,
     log: Logger,
@@ -250,6 +278,7 @@ def _upload(
     report: Report,
     timings: dict[str, float],
     overwrite_file_id: str = "",
+    aspect_label: str = "9:16",
 ) -> dict[str, Any]:
     from . import upload as upload_mod
 
@@ -276,7 +305,7 @@ def _upload(
         "drive_web_url": res.drive_web_url or "",
         "bytes": int(res.bytes),
         "format": "mp4",
-        "aspect": cfg.output_aspect if cfg.output_aspect == "source" else "9:16",
+        "aspect": aspect_label,
         "overwritten": bool(overwrite_file_id),
     }
 
@@ -305,16 +334,11 @@ def run_first(
 
     step_ref[0] = "probe"
     vp = vertical.probe_video(log, cfg.source_path)
-    aspect = vertical.classify_aspect(vp.width, vp.height)
+    source_aspect = vertical.classify_aspect(vp.width, vp.height)
     total_duration = vp.duration_s or 0.0
-    log.info(f"video: {vp.width}x{vp.height} ({aspect}), {total_duration:.1f}s")
-    if cfg.output_aspect == "source" and vp.width > 1 and vp.height > 1:
-        # output aspek asli: kanvas = dimensi sumber (genap), tanpa komposisi
-        # vertikal; subtitle tetap burn-in di kanvas yang sama.
-        target_wh = (vp.width - vp.width % 2, vp.height - vp.height % 2)
-        aspect = "source"
-    else:
-        target_wh = vertical.pick_target_size(vp.width, vp.height)
+    log.info(f"video: {vp.width}x{vp.height} ({source_aspect}), {total_duration:.1f}s")
+    # output aspek asli: kanvas = dimensi sumber (genap), subtitle tetap burn-in
+    render_aspect, target_wh = _resolve_canvas(cfg, vp)
     log.info(f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)")
 
     step_ref[0] = "extract"
@@ -447,7 +471,7 @@ def run_first(
     manifest = {
         "jobId": cfg.job_id,
         "durationSeconds": round(total_duration, 3),
-        "sourceAspect": aspect,
+        "sourceAspect": source_aspect,
         "segments": [{"idx": r["idx"], "start": r["start"], "end": r["end"]} for r in rows],
     }
     cfg.manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
@@ -466,9 +490,9 @@ def run_first(
         for r in rows
     ]
     _tts_to_render(
-        cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref, target_wh
+        cfg, log, prog, report, timings, segs, total_duration, render_aspect, step_ref, target_wh
     )
-    res = _upload(cfg, log, prog, report, timings)
+    res = _upload(cfg, log, prog, report, timings, aspect_label=_aspect_label(cfg, target_wh))
 
     res.update(
         {
@@ -561,16 +585,13 @@ def run_revision(
 
     step_ref[0] = "probe"
     vp = vertical.probe_video(log, cfg.source_path)
-    aspect = vertical.classify_aspect(vp.width, vp.height)
     total_duration = max(vp.duration_s or 0.0, float(manifest.get("durationSeconds") or 0.0))
-    if cfg.output_aspect == "source" and vp.width > 1 and vp.height > 1:
-        # output aspek asli: kanvas = dimensi sumber (genap), tanpa komposisi
-        # vertikal; subtitle tetap burn-in di kanvas yang sama.
-        target_wh = (vp.width - vp.width % 2, vp.height - vp.height % 2)
-        aspect = "source"
-    else:
-        target_wh = vertical.pick_target_size(vp.width, vp.height)
-    log.info(f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)")
+    # output aspek asli: kanvas = dimensi sumber (genap), subtitle tetap burn-in
+    render_aspect, target_wh = _resolve_canvas(cfg, vp)
+    log.info(
+        f"video: {vp.width}x{vp.height} ({vertical.classify_aspect(vp.width, vp.height)}), "
+        f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)"
+    )
 
     # tempo dihitung ulang deterministik dari teks (TANPA LLM) — sama seperti
     # aturan Worker: est = len / (slot × CPS), clamp 1,25
@@ -593,7 +614,7 @@ def run_revision(
         )
 
     _tts_to_render(
-        cfg, log, prog, report, timings, segs, total_duration, aspect, step_ref, target_wh
+        cfg, log, prog, report, timings, segs, total_duration, render_aspect, step_ref, target_wh
     )
     res = _upload(
         cfg,
@@ -601,6 +622,7 @@ def run_revision(
         prog,
         report,
         timings,
+        aspect_label=_aspect_label(cfg, target_wh),
         overwrite_file_id=cfg.result_drive_file_id
         or str(payload.get("result_drive_file_id") or ""),
     )
@@ -621,6 +643,51 @@ def run_revision(
 # ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
+
+
+def _save_callback_payload(cfg: Config, payload: dict[str, Any]) -> None:
+    """Simpan payload hasil di workspace runner utk `callback_guard`.
+
+    Video sudah di Drive pada titik ini; kalau engine mati sebelum/sesudah
+    mengirim, guard masih punya payload lengkap untuk percobaan terakhir.
+    Gagal menulis = bukan fatal (guard tetap bisa mengirim kabar kegagalan).
+    """
+    try:
+        path = cfg.out_dir / "callback-payload.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError as e:
+        print(f"::warning::gagal menyimpan payload callback: {e}", file=sys.stderr)
+
+
+def _send_result(cfg: Config, log: Logger, report: Report, payload: dict[str, Any]) -> bool:
+    """Kirim hasil; bila ditolak app, ulangi sekali tanpa field informasional."""
+    ok = callback.send(
+        log,
+        url=cfg.callback_url,
+        secret=cfg.callback_secret,
+        payload=payload,
+        event="result",
+        run_id=cfg.github_run_id,
+        run_url=cfg.github_run_url,
+    )
+    if ok:
+        report.callback_delivered(True)
+        return True
+    log.warn("hasil ditolak app — kirim ulang dengan payload konservatif (field informasional)")
+    ok = callback.send(
+        log,
+        url=cfg.callback_url,
+        secret=cfg.callback_secret,
+        payload=callback.normalize_informational(payload),
+        event="result",
+        run_id=cfg.github_run_id,
+        run_url=cfg.github_run_url,
+    )
+    report.callback_delivered(ok)
+    return ok
 
 
 def main() -> int:
@@ -699,21 +766,33 @@ def main() -> int:
 
         step_ref[0] = "callback"
         payload = callback.shrink_to_fit(_done_payload(cfg, result), log)
-        ok = callback.send(
-            log,
-            url=cfg.callback_url,
-            secret=cfg.callback_secret,
-            payload=payload,
-            event="result",
-            run_id=cfg.github_run_id,
-            run_url=cfg.github_run_url,
+        _save_callback_payload(cfg, payload)
+        if _send_result(cfg, log, report, payload):
+            report.succeed()
+            print(json.dumps({"ok": True, "mode": cfg.mode, "file": str(cfg.final_video_path)}))
+            return 0
+
+        # Video selesai & sudah ada di Drive user, tapi app tidak menerima kabar
+        # hasil. JANGAN laporkan sukses: run merah + code/step jelas, supaya UI
+        # tidak lagi menampilkan "Gagal pada tahap unknown (unknown)".
+        report.fail(
+            "callback_failed",
+            "Video hasil sudah terunggah ke folder Drive-mu, tetapi inggrisin menolak kabar "
+            "hasil (callback). Alasan penolakan ada di log runner.",
+            "callback",
         )
-        report.callback_delivered(ok)
-        report.succeed()
-        if not ok:
-            log.error("callback hasil tidak terkirim — reconciler app yang akan menjemput status")
-        print(json.dumps({"ok": True, "mode": cfg.mode, "file": str(cfg.final_video_path)}))
-        return 0
+        log.error("callback hasil tidak terkirim — reconciler app yang akan menjemput status")
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "callback_failed",
+                    "message": "callback hasil ditolak / tidak terkirim",
+                    "step": "callback",
+                }
+            )
+        )
+        return 1
 
     except Exception as e:  # noqa: BLE001
         code = getattr(e, "code", None) or "unknown"

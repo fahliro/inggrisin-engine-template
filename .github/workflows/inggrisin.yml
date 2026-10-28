@@ -380,6 +380,7 @@ jobs:
         run: |
           python -m engine.callback_guard \
             --report "${{ runner.temp }}/report.json" \
+            --payload "${{ runner.temp }}/inggrisin/out/callback-payload.json" \
             --conclusion "${{ job.status }}"
 
       # ------------------------------------------------------------------

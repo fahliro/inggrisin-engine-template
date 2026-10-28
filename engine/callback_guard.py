@@ -36,6 +36,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", required=True)
     ap.add_argument("--conclusion", default="unknown")
+    ap.add_argument(
+        "--payload",
+        default="",
+        help="payload hasil yang disimpan engine (out/callback-payload.json)",
+    )
     args = ap.parse_args()
 
     job_id = os.environ.get("INGGRISIN_JOB_ID", "").strip()
@@ -55,9 +60,37 @@ def main() -> int:
         print(f"callback sudah terkirim oleh engine (status={report.get('status')})")
         return 0
 
+    # ------------------------------------------------------------------
+    # Percobaan terakhir utk hasil yang SUDAH jadi: video sudah terunggah ke
+    # Drive user, jadi kabar 'done' lebih berharga daripada kabar gagal.
+    # Payload lengkap disimpan engine sebelum mengirim (lihat _save_callback_payload).
+    # ------------------------------------------------------------------
+    saved = _load_report(Path(args.payload)) if args.payload else {}
+    if saved.get("status") == "done" and saved.get("result"):
+        try:
+            from .callback import normalize_informational, send
+            from .log import Logger
+
+            log = Logger()
+            ok = send(
+                log,
+                url=url,
+                secret=secret,
+                payload=normalize_informational(saved),
+                event="result",
+                run_id=run_id,
+                run_url=run_url,
+            )
+            if ok:
+                print("callback_guard: hasil terkirim (percobaan terakhir, field informasional)")
+                return 0
+            print("::warning::callback_guard: hasil tetap ditolak app", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"::warning::callback_guard hasil: {type(e).__name__}", file=sys.stderr)
+
     # susun payload kegagalan
     code = report.get("error_code") or (
-        "cancelled_by_user" if args.conclusion == "cancelled" else "unknown"
+        "cancelled_by_user" if args.conclusion == "cancelled" else "callback_failed"
     )
     message = report.get("error_message") or (
         f"Workflow berakhir dengan status '{args.conclusion}' tanpa mengirim hasil. "
@@ -71,7 +104,7 @@ def main() -> int:
         "error": {
             "code": code,
             "message": str(message)[:2000],
-            "step": report.get("error_step", "unknown"),
+            "step": report.get("error_step") or "callback",
         },
         "engine_version": engine_version,
         "finished_at": int(time.time() * 1000),

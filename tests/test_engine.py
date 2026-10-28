@@ -14,6 +14,7 @@ import hmac
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1515,3 +1516,126 @@ def test_chunk_seconds_for_menjaga_chunk_di_bawah_batas():
     assert 60 <= sec <= audio_mod.CHUNK_SECONDS
     # input degenerat aman
     assert audio_mod.chunk_seconds_for(0, 0) == audio_mod.CHUNK_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# output "Asli" (output_aspect=source) — kontrak aspect
+# Regresi insiden job_eA7QKp3RhLvdXfSH: 'source' bocor ke manifest.sourceAspect
+# & result.aspect → app menolak callback 422 walau video sudah terunggah.
+# ---------------------------------------------------------------------------
+
+
+def _cfg(output_aspect: str = "source") -> SimpleNamespace:
+    return SimpleNamespace(output_aspect=output_aspect)
+
+
+def test_ratio_label():
+    assert vertical.ratio_label(1920, 1080) == "16:9"
+    assert vertical.ratio_label(1080, 1920) == "9:16"
+    assert vertical.ratio_label(1000, 1000) == "1:1"
+    assert vertical.ratio_label(1080, 1350) == "4:5"
+    assert vertical.ratio_label(854, 480) == "custom"  # 427:240 tidak terbaca
+    assert vertical.ratio_label(0, 0) == "unknown"
+
+
+def test_resolve_canvas_source_pakai_dimensi_sumber():
+    vp = vertical.VideoProbe(width=1920, height=1080, duration_s=10.0)
+    render_aspect, wh = main_mod._resolve_canvas(_cfg("source"), vp)
+    assert render_aspect == "source"
+    assert wh == (1920, 1080)
+    # dimensi ganjil digenapkan (syarat libx264/yuv420p)
+    vp_odd = vertical.VideoProbe(width=1081, height=1921, duration_s=10.0)
+    assert main_mod._resolve_canvas(_cfg("source"), vp_odd)[1] == (1080, 1920)
+
+
+def test_resolve_canvas_vertikal_tetap_perilaku_lama():
+    vp = vertical.VideoProbe(width=1920, height=1080, duration_s=10.0)
+    render_aspect, wh = main_mod._resolve_canvas(_cfg("9:16"), vp)
+    assert render_aspect == "horizontal"  # klasifikasi sumber → jalur blur
+    assert wh == (vertical.TARGET_W, vertical.TARGET_H)
+
+
+def test_resolve_canvas_probe_rusak_tidak_memilih_source():
+    vp = vertical.VideoProbe(width=0, height=0, duration_s=0.0)
+    render_aspect, wh = main_mod._resolve_canvas(_cfg("source"), vp)
+    assert render_aspect == "unknown"
+    assert wh == (vertical.TARGET_W, vertical.TARGET_H)
+
+
+def test_aspect_label_melaporkan_rasio_keluaran_sebenarnya():
+    vp = vertical.VideoProbe(width=1920, height=1080, duration_s=10.0)
+    _, wh = main_mod._resolve_canvas(_cfg("source"), vp)
+    assert main_mod._aspect_label(_cfg("source"), wh) == "16:9"
+    assert main_mod._aspect_label(_cfg("9:16"), (1080, 1920)) == "9:16"
+
+
+def test_normalize_informational_membuang_pemicu_422_tanpa_menyentuh_hasil():
+    payload = {
+        "contract_version": "2026-10-29.1",
+        "job_id": "job_x",
+        "status": "done",
+        "finished_at": 1793204650000,
+        "runner": {"os": "Linux", "python": "3.11"},
+        "result": {
+            "drive_file_id": "1Av6bQqQDCvISdQepN3J8IQRt-5kKh-FK",
+            "drive_file_name": "hasil (EN).mp4",
+            "bytes": 2844634,
+            "format": "mp4",
+            "aspect": "source",  # <- nilai yang bikin app 422
+            "manifest": {
+                "jobId": "job_x",
+                "durationSeconds": 12.3,
+                "sourceAspect": "source",  # <- dan ini
+                "segments": [{"idx": 0, "start": 0.0, "end": 1.5}],
+            },
+            "subtitles": [{"idx": 0, "start": 0.0, "end": 1.5, "textId": "", "textEn": "Hi"}],
+        },
+    }
+    out = callback.normalize_informational(payload)
+    assert "aspect" not in out["result"]
+    assert "format" not in out["result"]
+    assert "runner" not in out
+    assert out["result"]["manifest"]["sourceAspect"] == "unknown"
+    # identitas & isi hasil utuh
+    assert out["job_id"] == "job_x" and out["status"] == "done"
+    assert out["result"]["drive_file_id"] == payload["result"]["drive_file_id"]
+    assert out["result"]["subtitles"] == payload["result"]["subtitles"]
+    assert out["result"]["manifest"]["segments"] == payload["result"]["manifest"]["segments"]
+    # payload asli tidak dimutasi
+    assert payload["result"]["aspect"] == "source"
+    assert payload["result"]["manifest"]["sourceAspect"] == "source"
+
+
+def test_normalize_informational_memperbaiki_field_wajib_rusak():
+    out = callback.normalize_informational({"job_id": "j", "status": "done"})
+    assert out["contract_version"] == "unknown"
+    assert isinstance(out["finished_at"], int)
+
+
+def test_save_callback_payload_bisa_dibaca_guard(tmp_path):
+    cfg = SimpleNamespace(out_dir=tmp_path)
+    payload = {"job_id": "j", "status": "done", "result": {"drive_file_id": "x"}}
+    main_mod._save_callback_payload(cfg, payload)
+    saved = tmp_path / "callback-payload.json"
+    assert json.loads(saved.read_text(encoding="utf-8")) == payload
+    # guard membacanya lewat _load_report (toleran file rusak)
+    from engine import callback_guard
+
+    assert callback_guard._load_report(saved)["status"] == "done"
+    assert callback_guard._load_report(tmp_path / "tidak-ada.json") == {}
+
+
+def test_render_source_tetap_satu_pass_dan_bakar_subtitle():
+    cmd = vertical.build_render_cmd(
+        Path("src.mp4"),
+        Path("voice.wav"),
+        Path("sub.ass"),
+        Path("out.mp4"),
+        "source",
+        duration_s=100.0,
+        w=1920,
+        h=1080,
+    )
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "gblur" not in fc and "subtitles=" in fc
+    assert cmd.count("-c:v") == 1  # satu pass, tidak pernah re-encode dua kali
