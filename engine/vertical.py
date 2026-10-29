@@ -243,16 +243,22 @@ def build_render_cmd(
     # 800k yang visibly merusak (req: "enhance tanpa merusak quality").
     # Preset medium (≤5 mnt) / fast (>5 mnt): efisiensi kompresi lebih baik pada
     # CRF sama = kualitas naik tanpa bitrate naik; encoder tetap satu pass.
-    big = w * h >= 1_900_000  # kelas 1080p (2,07 Mpx) ke atas
+    # Plafon bitrate PROPORSIONAL JUMLAH PIKSEL kanvas: plafonflat kelas
+    # besar/kecil dulu membuat kanvas lebar ber-res tinggi (mis. sumber 4K
+    # pada output "Asli", 8,3 Mpx) dipaksa 12M — CRF 18 minta jauh lebih
+    # banyak sehingga adegan gerak pecah blok, sementara versi vertical
+    # (downscale ke 2 Mpx) aman. Sekarang maxrate = kbps-per-Mpx menurut
+    # tier durasi (lantai 4M untuk kanvas mungil, atap 48M hanya tersentuh
+    # ≥4K); CRF tetap pengendali mutu utama, maxrate hanya penjaga puncak.
+    mpx = w * h / 1_000_000
     if crf == 18 and duration_s > 300:
-        crf, preset = 21, "fast"
-        maxrate, bufsize = ("6000k", "12000k") if big else ("4000k", "8000k")
+        crf, preset, k = 21, "fast", 3500
     elif crf == 18 and duration_s > 120:
-        crf, preset = 19, "medium"
-        maxrate, bufsize = ("8000k", "16000k") if big else ("5000k", "10000k")
+        crf, preset, k = 19, "medium", 5500
     else:
-        preset = "medium"
-        maxrate, bufsize = ("12000k", "24000k") if big else ("8000k", "16000k")
+        preset, k = "medium", 9000
+    rate_k = int(min(48_000, max(4000, round(mpx * k / 100) * 100)))
+    maxrate, bufsize = f"{rate_k}k", f"{rate_k * 2}k"
     audio_k = "192k"  # suara manusia + BGM: 192k AAC ≈ transparan, semua tier
     sub = f"subtitles='{_escape_filter_path(ass)}'"
     if aspect == "source":

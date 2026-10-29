@@ -1139,7 +1139,7 @@ def test_vertical_bitrate_tier_video_panjang(tmp_path):
         "horizontal",
         duration_s=678.0,
     )
-    assert "6000k" in cmd_long and "192k" in cmd_long
+    assert "7300k" in cmd_long and "192k" in cmd_long
     cmd_short = vertical.build_render_cmd(
         tmp_path / "s.mp4",
         tmp_path / "v.wav",
@@ -1148,7 +1148,7 @@ def test_vertical_bitrate_tier_video_panjang(tmp_path):
         "horizontal",
         duration_s=30.0,
     )
-    assert "12000k" in cmd_short and "192k" in cmd_short
+    assert "18700k" in cmd_short and "192k" in cmd_short
 
 
 def test_vertical_cmd_tier_bitrate_durasi(tmp_path):
@@ -1165,9 +1165,11 @@ def test_vertical_cmd_tier_bitrate_durasi(tmp_path):
     long_ = vertical.build_render_cmd(**args, duration_s=700)
     assert "-maxrate" in short and "-maxrate" in long_
     i = long_.index("-maxrate")
-    assert long_[i + 1] == "6000k"
+    assert long_[i + 1] == "7300k"  # 2,07 Mpx x 3500 kbps/Mpx (tier >5 mnt)
     j = short.index("-maxrate")
-    assert short[j + 1] == "12000k"
+    assert short[j + 1] == "18700k"  # 2,07 Mpx x 9000 kbps/Mpx (tier pendek)
+    assert long_[long_.index("-bufsize") + 1] == "14600k"
+    assert short[short.index("-bufsize") + 1] == "37400k"
     # audio: semua tier 192k (suara + BGM)
     assert long_[long_.index("-b:a") + 1] == "192k"
     assert short[short.index("-b:a") + 1] == "192k"
@@ -1196,12 +1198,12 @@ def test_vertical_cmd_tier_bitrate_kanvas_720(tmp_path):
     )
     long_ = vertical.build_render_cmd(**args, duration_s=700, w=720, h=1280)
     assert long_[long_.index("-crf") + 1] == "21"
-    assert long_[long_.index("-maxrate") + 1] == "4000k"
+    assert long_[long_.index("-maxrate") + 1] == "4000k"  # lantai: 0,92 Mpx x 3500 < 4000
     assert long_[long_.index("-bufsize") + 1] == "8000k"
     assert long_[long_.index("-b:a") + 1] == "192k"
     short = vertical.build_render_cmd(**args, duration_s=60, w=720, h=1280)
     assert short[short.index("-crf") + 1] == "18"
-    assert short[short.index("-maxrate") + 1] == "8000k"
+    assert short[short.index("-maxrate") + 1] == "8300k"  # 0,92 Mpx x 9000 kbps/Mpx
     assert short[short.index("-b:a") + 1] == "192k"
     # kanvas 720x1280 benar-benar dipakai filter scale/crop
     fc = long_[long_.index("-filter_complex") + 1]
@@ -1221,11 +1223,31 @@ def test_vertical_cmd_tier_berdasar_piksel_bukan_tinggi(tmp_path):
     )
     desk = vertical.build_render_cmd(**args, duration_s=60, w=1920, h=1080)
     vert = vertical.build_render_cmd(**args, duration_s=60, w=1080, h=1920)
-    assert desk[desk.index("-maxrate") + 1] == vert[vert.index("-maxrate") + 1] == "12000k"
+    assert desk[desk.index("-maxrate") + 1] == vert[vert.index("-maxrate") + 1] == "18700k"
     # preset medium untuk video pendek (kualitas), fast hanya >5 menit
     assert desk[desk.index("-preset") + 1] == "medium"
     panjang = vertical.build_render_cmd(**args, duration_s=700, w=1920, h=1080)
     assert panjang[panjang.index("-preset") + 1] == "fast"
+
+
+def test_vertical_cmd_maxrate_proporsional_piksel(tmp_path):
+    """Output "Asli" ber-res tinggi (sumber 4K) tidak boleh dicekik plafon
+    flat: maxrate naik mengikuti jumlah piksel kanvas (keluhan pecah)."""
+    args = dict(
+        src=tmp_path / "s.mp4",
+        voice_wav=tmp_path / "v.wav",
+        ass=tmp_path / "x.ass",
+        out=tmp_path / "o.mp4",
+        aspect="source",
+    )
+    hd = vertical.build_render_cmd(**args, duration_s=60, w=1280, h=720)
+    fhd = vertical.build_render_cmd(**args, duration_s=60, w=1920, h=1080)
+    uhd = vertical.build_render_cmd(**args, duration_s=60, w=3840, h=2160)
+    def rate_k(c: list[str]) -> int:
+        return int(c[c.index("-maxrate") + 1][:-1])
+
+    assert rate_k(hd) == 8300 and rate_k(fhd) == 18700 and rate_k(uhd) == 48000  # atap 48M
+    assert rate_k(hd) < rate_k(fhd) < rate_k(uhd)
 
 
 def test_pick_fps_pertahankan_fps_sumber():
