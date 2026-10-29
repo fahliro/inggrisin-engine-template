@@ -29,8 +29,18 @@ TARGET_H = 1920
 TARGET_W_SMALL = 720
 TARGET_H_SMALL = 1280
 TARGET_FPS = 30
+FPS_MAX = 60  # sumber 60 fps dipertahankan; di atas itu diturunkan (hemat bit)
 SUBTITLE_BOTTOM_PCT = 19  # di atas safe zone platform (docs/01 §16)
 FONT_SIZE = 58
+OUTLINE = 3.2  # tebal garis luar ASS pada font referensi (58)
+SHADOW = 2.0
+# Referensi gaya subtitle = kanvas vertical 1080x1920 ("versi vertical sudah
+# bagus"). Font diskalakan menurut DIAGONAL kanvas sehingga kanvas 9:16 dan
+# 16:9 di kelas resolusi yang sama mendapat gaya absolut identik, dan outline/
+# shadow diskalakan menurut font sehingga RASIO tebal-garis-vs-glyph konstan
+# (dulu Outline konstan 3.2 unit PlayRes: di kanvas pendek fs mengecil tapi
+# outline tidak → subtitle desktop terlihat bergaris tebal & font kecil).
+REF_DIAG = (TARGET_W**2 + TARGET_H**2) ** 0.5
 
 
 class VerticalError(Exception):
@@ -45,6 +55,19 @@ class VideoProbe:
     width: int
     height: int
     duration_s: float
+    fps: float = 0.0
+
+
+def pick_fps(vp: VideoProbe, fallback: int = TARGET_FPS) -> int:
+    """fps keluaran = fps sumber (dipertahankan supaya gerak tidak patah/
+    diduplikasi), dibulatkan & dijepit [15, FPS_MAX]; probe gagal → fallback.
+
+    Dulu `-r 30` dipaksa untuk semua sumber: video 60 fps kehilangan setengah
+    temporal resolution-nya (= merusak quality, req task kualitas).
+    """
+    if vp.fps <= 0:
+        return fallback
+    return int(min(FPS_MAX, max(15, round(vp.fps))))
 
 
 def probe_video(log: Logger, path: Path) -> VideoProbe:
@@ -63,15 +86,21 @@ def probe_video(log: Logger, path: Path) -> VideoProbe:
         raise VerticalError("ffmpeg_failed", f"ffprobe gagal: {proc.stderr.strip()[-300:]}")
     data = json.loads(proc.stdout or "{}")
     w = h = 0
+    fps = 0.0
     for st in data.get("streams") or []:
         if st.get("codec_type") == "video":
             w = int(st.get("width") or 0)
             h = int(st.get("height") or 0)
+            num, _, den = str(st.get("avg_frame_rate") or "0/1").partition("/")
+            try:
+                fps = float(num) / float(den or 1)
+            except ValueError:
+                fps = 0.0
             break
     dur = float((data.get("format") or {}).get("duration") or 0.0)
     if w <= 0 or h <= 0:
         raise VerticalError("ffmpeg_failed", "tidak ditemukan stream video di sumber")
-    return VideoProbe(width=w, height=h, duration_s=dur)
+    return VideoProbe(width=w, height=h, duration_s=dur, fps=fps)
 
 
 def classify_aspect(width: int, height: int) -> str:
@@ -143,7 +172,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,{fs},&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,1,3.2,2,2,64,64,{mv},1
+Style: Default,DejaVu Sans,{fs},&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,1,{ol:g},{sh:g},2,64,64,{mv},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -160,10 +189,19 @@ def build_ass(
     font_size: int | None = None,
 ) -> Path:
     margin_v = round(h * bottom_pct / 100)
-    # Font size proporsional kanvas (§35): 58 pada PlayResY 1920 ≡ 39 pada 1280 —
-    # ukuran relatif di layar identik, render tetap tajam pada resolusi keluaran.
-    fs = round(FONT_SIZE * h / TARGET_H) if font_size is None else font_size
-    parts = [_ASS_HEADER.format(w=w, h=h, fs=fs, mv=margin_v)]
+    # Font mengikuti DIAGONAL kanvas relatif ke referensi vertical (REF_DIAG):
+    # kanvas 9:16 mendapat angka yang SAMA persis seperti sebelumnya
+    # (58 @ 1080x1920, 39 @ 720x1280); kanvas landscape/square mendapat font
+    # sekelas resolusi yang sama alih-alih mengecil mengikuti tinggi
+    # (1920x1080 dulu fs 33 → subtitle desktop terlihat kecil).
+    # Outline & shadow proporsional ke font supaya rasio tebal-garis identik di
+    # semua kanvas — keluhan "outline desktop terlalu tebal" datang dari Outline
+    # konstan 3.2 unit PlayRes sementara fs menyusut.
+    fs = round(FONT_SIZE * (w**2 + h**2) ** 0.5 / REF_DIAG) if font_size is None else font_size
+    scale = fs / FONT_SIZE
+    ol = round(OUTLINE * scale, 1)
+    sh = round(SHADOW * scale, 1)
+    parts = [_ASS_HEADER.format(w=w, h=h, fs=fs, ol=ol, sh=sh, mv=margin_v)]
     for c in cues:
         text = sanitize_for_burn(c.text).replace("\n", "\\N")
         parts.append(f"Dialogue: 0,{ass_time(c.start)},{ass_time(c.end)},Default,,0,0,0,,{text}\n")
@@ -195,26 +233,27 @@ def build_render_cmd(
     w: int = TARGET_W,
     h: int = TARGET_H,
     fps: int = TARGET_FPS,
-    crf: int = 20,
+    crf: int = 18,
 ) -> list[str]:
-    # Tier bitrate menurut durasi (docs/01 §34) × resolusi kanvas (§35):
-    # CRF 20 polos membuat file 10+ menit membengkak (126 MB utk sumber 35 MB),
-    # dan kanvas 720x1280 (44% piksel 1080x1920) butuh plafon lebih rendah.
-    # Audio 96k cukup utk suara orang; tier audio tetap menurut durasi.
-    if crf == 20 and duration_s > 300:
-        crf = 23
-        maxrate, bufsize, audio_k = (
-            ("800k", "1600k", "96k") if h >= TARGET_H else ("500k", "1000k", "96k")
-        )
-    elif crf == 20 and duration_s > 120:
-        crf = 21
-        maxrate, bufsize, audio_k = (
-            ("1500k", "3000k", "128k") if h >= TARGET_H else ("900k", "1800k", "128k")
-        )
+    # Tier kualitas menurut DURASI × JUMLAH PIKSEL kanvas (bukan tinggi kanvas:
+    # desktop 1920x1080 punya piksel sama dengan vertical 1080x1920, dulu malah
+    # kena plafon kelas kecil 1500k → hasil desktop lembek). CRF 18 = nyaris
+    # transparan untuk source feed; tier panjang melonggar bertahap supaya file
+    # 10+ menit tidak meledak (kasus lama: 126 MB) tapi TIDAK lagi serendah
+    # 800k yang visibly merusak (req: "enhance tanpa merusak quality").
+    # Preset medium (≤5 mnt) / fast (>5 mnt): efisiensi kompresi lebih baik pada
+    # CRF sama = kualitas naik tanpa bitrate naik; encoder tetap satu pass.
+    big = w * h >= 1_900_000  # kelas 1080p (2,07 Mpx) ke atas
+    if crf == 18 and duration_s > 300:
+        crf, preset = 21, "fast"
+        maxrate, bufsize = ("6000k", "12000k") if big else ("4000k", "8000k")
+    elif crf == 18 and duration_s > 120:
+        crf, preset = 19, "medium"
+        maxrate, bufsize = ("8000k", "16000k") if big else ("5000k", "10000k")
     else:
-        maxrate, bufsize, audio_k = (
-            ("2500k", "5000k", "192k") if h >= TARGET_H else ("1500k", "3000k", "192k")
-        )
+        preset = "medium"
+        maxrate, bufsize = ("12000k", "24000k") if big else ("8000k", "16000k")
+    audio_k = "192k"  # suara manusia + BGM: 192k AAC ≈ transparan, semua tier
     sub = f"subtitles='{_escape_filter_path(ass)}'"
     if aspect == "source":
         # aspek asli: kanvas == dimensi sumber → scale no-op, subtitle burn-in
@@ -252,7 +291,7 @@ def build_render_cmd(
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        preset,
         "-crf",
         str(crf),
         "-maxrate",

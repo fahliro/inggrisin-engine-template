@@ -1139,7 +1139,7 @@ def test_vertical_bitrate_tier_video_panjang(tmp_path):
         "horizontal",
         duration_s=678.0,
     )
-    assert "800k" in cmd_long and "96k" in cmd_long
+    assert "6000k" in cmd_long and "192k" in cmd_long
     cmd_short = vertical.build_render_cmd(
         tmp_path / "s.mp4",
         tmp_path / "v.wav",
@@ -1148,7 +1148,7 @@ def test_vertical_bitrate_tier_video_panjang(tmp_path):
         "horizontal",
         duration_s=30.0,
     )
-    assert "2500k" in cmd_short and "192k" in cmd_short
+    assert "12000k" in cmd_short and "192k" in cmd_short
 
 
 def test_vertical_cmd_tier_bitrate_durasi(tmp_path):
@@ -1165,11 +1165,11 @@ def test_vertical_cmd_tier_bitrate_durasi(tmp_path):
     long_ = vertical.build_render_cmd(**args, duration_s=700)
     assert "-maxrate" in short and "-maxrate" in long_
     i = long_.index("-maxrate")
-    assert long_[i + 1] == "800k"
+    assert long_[i + 1] == "6000k"
     j = short.index("-maxrate")
-    assert short[j + 1] == "2500k"
-    # audio: panjang 96k, pendek 192k
-    assert long_[long_.index("-b:a") + 1] == "96k"
+    assert short[j + 1] == "12000k"
+    # audio: semua tier 192k (suara + BGM)
+    assert long_[long_.index("-b:a") + 1] == "192k"
     assert short[short.index("-b:a") + 1] == "192k"
 
 
@@ -1195,17 +1195,48 @@ def test_vertical_cmd_tier_bitrate_kanvas_720(tmp_path):
         aspect="horizontal",
     )
     long_ = vertical.build_render_cmd(**args, duration_s=700, w=720, h=1280)
-    assert long_[long_.index("-crf") + 1] == "23"
-    assert long_[long_.index("-maxrate") + 1] == "500k"
-    assert long_[long_.index("-bufsize") + 1] == "1000k"
-    assert long_[long_.index("-b:a") + 1] == "96k"
+    assert long_[long_.index("-crf") + 1] == "21"
+    assert long_[long_.index("-maxrate") + 1] == "4000k"
+    assert long_[long_.index("-bufsize") + 1] == "8000k"
+    assert long_[long_.index("-b:a") + 1] == "192k"
     short = vertical.build_render_cmd(**args, duration_s=60, w=720, h=1280)
-    assert short[short.index("-crf") + 1] == "20"
-    assert short[short.index("-maxrate") + 1] == "1500k"
+    assert short[short.index("-crf") + 1] == "18"
+    assert short[short.index("-maxrate") + 1] == "8000k"
     assert short[short.index("-b:a") + 1] == "192k"
     # kanvas 720x1280 benar-benar dipakai filter scale/crop
     fc = long_[long_.index("-filter_complex") + 1]
     assert "scale=720:1280" in fc and "crop=720:1280" in fc
+
+
+def test_vertical_cmd_tier_berdasar_piksel_bukan_tinggi(tmp_path):
+    """Desktop 1920x1080 (2,07 Mpx) harus dapat plafon kelas BESAR yang sama
+    dengan vertical 1080x1920 — dulu tiering pakai tinggi kanvas sehingga
+    output "Asli" 1080p tercekit 1500k (keluhan kualitas)."""
+    args = dict(
+        src=tmp_path / "s.mp4",
+        voice_wav=tmp_path / "v.wav",
+        ass=tmp_path / "x.ass",
+        out=tmp_path / "o.mp4",
+        aspect="source",
+    )
+    desk = vertical.build_render_cmd(**args, duration_s=60, w=1920, h=1080)
+    vert = vertical.build_render_cmd(**args, duration_s=60, w=1080, h=1920)
+    assert desk[desk.index("-maxrate") + 1] == vert[vert.index("-maxrate") + 1] == "12000k"
+    # preset medium untuk video pendek (kualitas), fast hanya >5 menit
+    assert desk[desk.index("-preset") + 1] == "medium"
+    panjang = vertical.build_render_cmd(**args, duration_s=700, w=1920, h=1080)
+    assert panjang[panjang.index("-preset") + 1] == "fast"
+
+
+def test_pick_fps_pertahankan_fps_sumber():
+    vp60 = vertical.VideoProbe(width=1920, height=1080, duration_s=10.0, fps=60.0)
+    vp24 = vertical.VideoProbe(width=1920, height=1080, duration_s=10.0, fps=24.0)
+    vp0 = vertical.VideoProbe(width=1920, height=1080, duration_s=10.0, fps=0.0)
+    vp120 = vertical.VideoProbe(width=1920, height=1080, duration_s=10.0, fps=120.0)
+    assert vertical.pick_fps(vp60) == 60
+    assert vertical.pick_fps(vp24) == 24
+    assert vertical.pick_fps(vp0) == vertical.TARGET_FPS
+    assert vertical.pick_fps(vp120) == vertical.FPS_MAX
 
 
 def test_build_ass_fontsize_proporsional_kanvas(tmp_path):
@@ -1217,6 +1248,22 @@ def test_build_ass_fontsize_proporsional_kanvas(tmp_path):
     # MarginV 19% kanvas: 365 vs 243 — posisi relatif identik
     assert ",64,64,365,1" in t1080
     assert ",64,64,243,1" in t720
+    # referensi vertical TIDAK berubah: outline 3.2 / shadow 2 pada fs 58
+    assert ",1,3.2,2,2,64,64,365,1" in t1080
+    # outline/shadow proporsional font (rasio tebal-glyph konstan antar kanvas)
+    assert ",1,2.2,1.3,2,64,64,243,1" in t720
+
+
+def test_build_ass_kanvas_landscape_font_sekelas(tmp_path):
+    """Subtitle desktop: font mengikuti diagonal kanvas (1920x1080 → fs 58,
+    sama dengan vertical sekelasnya) — dulu fs 33 sehingga terlihat kecil, dan
+    outline konstan 3.2 sehingga terlihat tebal relatif terhadap glyph."""
+    cues = [srt.Cue(idx=0, start=0.0, end=2.0, text="Hello world")]
+    tdesk = vertical.build_ass(cues, tmp_path / "d.ass", w=1920, h=1080).read_text()
+    assert "PlayResY: 1080" in tdesk and ",58," in tdesk
+    assert ",1,3.2,2,2,64,64,205,1" in tdesk  # MarginV 19% dari 1080
+    t720p = vertical.build_ass(cues, tmp_path / "e.ass", w=1280, h=720).read_text()
+    assert ",39," in t720p and ",1,2.2,1.3,2,64,64,137,1" in t720p
 
 
 # ---------------------------------------------------------------------------

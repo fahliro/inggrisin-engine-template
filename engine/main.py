@@ -141,6 +141,7 @@ def _tts_to_render(
     aspect: str,
     step_ref: list[str],
     target_wh: tuple[int, int] = (vertical.TARGET_W, vertical.TARGET_H),
+    fps: int = vertical.TARGET_FPS,
 ) -> None:
     """Sintesis per baris → pasakan durasi (atempo ≤ 1,25) → rakit track → render."""
     step_ref[0] = "tts"
@@ -232,6 +233,7 @@ def _tts_to_render(
         duration_s=total_duration,
         w=target_wh[0],
         h=target_wh[1],
+        fps=fps,
     )
     with prog.heartbeat(
         "rendering", "Merender video vertikal + subtitle (video panjang bisa lama)", 60
@@ -490,7 +492,17 @@ def run_first(
         for r in rows
     ]
     _tts_to_render(
-        cfg, log, prog, report, timings, segs, total_duration, render_aspect, step_ref, target_wh
+        cfg,
+        log,
+        prog,
+        report,
+        timings,
+        segs,
+        total_duration,
+        render_aspect,
+        step_ref,
+        target_wh,
+        fps=vertical.pick_fps(vp),
     )
     res = _upload(cfg, log, prog, report, timings, aspect_label=_aspect_label(cfg, target_wh))
 
@@ -614,7 +626,17 @@ def run_revision(
         )
 
     _tts_to_render(
-        cfg, log, prog, report, timings, segs, total_duration, render_aspect, step_ref, target_wh
+        cfg,
+        log,
+        prog,
+        report,
+        timings,
+        segs,
+        total_duration,
+        render_aspect,
+        step_ref,
+        target_wh,
+        fps=vertical.pick_fps(vp),
     )
     res = _upload(
         cfg,
