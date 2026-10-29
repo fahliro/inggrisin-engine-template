@@ -127,9 +127,9 @@ def translate(
     max_batch_chars: int = 6000,
 ) -> TranslateResult:
     if not api_key:
-        raise TranslateError("openrouter_auth", "OpenRouter API key tidak ada")
+        raise TranslateError("openrouter_auth", "OpenRouter API key is missing")
     if not segments:
-        raise TranslateError("llm_bad_json", "Tidak ada segmen untuk diterjemahkan")
+        raise TranslateError("llm_bad_json", "No segments to translate")
 
     t0 = time.monotonic()
     tokens = {"prompt": 0, "completion": 0}
@@ -168,7 +168,7 @@ def translate(
             log.warn("repair JSON juga gagal — job dihentikan", raw=repr(content[:600]))
             raise TranslateError(
                 "llm_bad_json",
-                f"LLM tidak mengembalikan JSON sesuai skema ({MAX_JSON_ATTEMPTS} percobaan + repair)",
+                f"LLM did not return schema-valid JSON ({MAX_JSON_ATTEMPTS} attempts + repair)",
             )
         got: set[int] = set()
         for item in data["segments"]:
@@ -192,7 +192,7 @@ def translate(
         if missing:
             raise TranslateError(
                 "llm_bad_json",
-                f"LLM menghilangkan {len(missing)} segmen (idx {missing[:5]}…) — mapping harus 1:1",
+                f"LLM dropped {len(missing)} segments (idx {missing[:5]}…) — mapping must be 1:1",
             )
 
     # ---- pass perbaikan untuk yang masih melebihi budget -------------------
@@ -230,7 +230,7 @@ def translate(
     for s in segments:
         text_en = out.get(s.idx, "")
         if not text_en:
-            raise TranslateError("llm_bad_json", f"Segmen {s.idx} tidak punya terjemahan")
+            raise TranslateError("llm_bad_json", f"Segment {s.idx} has no translation")
         slot = max(0.1, s.end - s.start)
         est_tempo = len(text_en) / (slot * CPS)  # 1.0 = pas di tempo natural
         budget = budget_of(s.start, s.end)
@@ -321,9 +321,9 @@ def _data_policy_hint(model: str, detail: str) -> str:
     is_free_target = model.endswith(":free") or model.startswith("openrouter/")
     if is_free_target and ("data policy" in low or "no endpoints" in low):
         return (
-            " | Solusi: model :free butuh izin training di akun OpenRouter — buka"
-            " https://openrouter.ai/settings/privacy lalu nyalakan 'Enable prompt logging'"
-            " + 'Enable completion logging' di bagian FREE ENDPOINTS, kemudian Coba lagi."
+            " | Fix: :free models need training permission on the OpenRouter account —"
+            " open https://openrouter.ai/settings/privacy and enable 'Enable prompt"
+            " logging' + 'Enable completion logging' under FREE ENDPOINTS, then try again."
         )
     return ""
 
@@ -421,7 +421,7 @@ def _chat(
             if attempt == MAX_RETRIES:
                 raise TranslateError(
                     "openrouter_failed",
-                    f"OpenRouter {last} setelah {MAX_RETRIES} percobaan"
+                    f"OpenRouter {last} after {MAX_RETRIES} attempts"
                     f"{_data_policy_hint(model, detail)}",
                 )
             _backoff(log, attempt, last, tag=tag)

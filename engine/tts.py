@@ -103,7 +103,7 @@ def ensure_voice(log: Logger, voice_id: str) -> tuple[Path, Path]:
     if not meta:
         raise TtsError(
             "piper_voice_missing",
-            f"Voice '{voice_id}' tidak dikenal. Pilihan: {', '.join(sorted(VOICES))}",
+            f"Unknown voice '{voice_id}'. Choices: {', '.join(sorted(VOICES))}",
         )
 
     dest = voice_dir() / Path(meta["path"]).name
@@ -117,7 +117,7 @@ def ensure_voice(log: Logger, voice_id: str) -> tuple[Path, Path]:
         _download_to(url, target)
 
     if not dest.exists() or dest.stat().st_size < 1024:
-        raise TtsError("piper_voice_missing", f"Model voice gagal diunduh: {dest.name}")
+        raise TtsError("piper_voice_missing", f"Voice model download failed: {dest.name}")
     return dest, cfg
 
 
@@ -136,7 +136,7 @@ def _download_to(url: str, dest: Path, retries: int = 3) -> None:
             last = e
             tmp.unlink(missing_ok=True)
             time.sleep(2**attempt)
-    raise TtsError("piper_voice_missing", f"gagal mengunduh {url}: {last}")
+    raise TtsError("piper_voice_missing", f"failed to download {url}: {last}")
 
 
 # ---------------------------------------------------------------------------
@@ -225,11 +225,11 @@ def _ensure_binary(log: Logger) -> Path | None:
                 target = (bin_dir / member.name).resolve()
                 if not str(target).startswith(str(bin_dir.resolve())):
                     raise TtsError(
-                        "piper_install_failed", f"path tidak aman di arsip: {member.name}"
+                        "piper_install_failed", f"unsafe path in archive: {member.name}"
                     )
             tf.extractall(bin_dir, filter="data")  # noqa: S202
     except tarfile.TarError as e:
-        raise TtsError("piper_install_failed", f"ekstraksi binary piper gagal: {e}") from e
+        raise TtsError("piper_install_failed", f"piper binary extraction failed: {e}") from e
     finally:
         tgz.unlink(missing_ok=True)
 
@@ -238,7 +238,7 @@ def _ensure_binary(log: Logger) -> Path | None:
         found = list(bin_dir.rglob("piper"))
         exe = found[0] if found else exe
     if not exe.exists():
-        raise TtsError("piper_install_failed", "binary `piper` tidak ditemukan setelah ekstraksi")
+        raise TtsError("piper_install_failed", "the `piper` binary was not found after extraction")
     exe.chmod(0o755)
     log.info(f"binary piper siap: {exe}")
     return exe
@@ -303,7 +303,7 @@ def synthesize_segments(
         if exe is None:
             raise TtsError(
                 "piper_install_failed",
-                "Piper tidak bisa dipakai: wheel Python gagal dan binary release tidak tersedia.",
+                "Piper is unusable: the Python wheel failed and no binary release is available.",
             )
         backend = "binary"
         files, failed = [], 0
@@ -317,7 +317,7 @@ def synthesize_segments(
                 failed += 1
 
     if not files:
-        raise TtsError("piper_failed", "Semua segmen gagal disintesis")
+        raise TtsError("piper_failed", "All segments failed to synthesize")
 
     merged = concat_with_gaps(log, files, out_dir / "merged.wav", gap_ms=gap_ms)
     elapsed = time.monotonic() - t0
@@ -563,14 +563,14 @@ def synthesize_lines(
     spoken = sum(1 for t in lines if (t or "").strip())
     missing = sum(1 for t, r in zip(lines, results, strict=True) if (t or "").strip() and r is None)
     if spoken and missing == spoken:
-        raise TtsError("piper_failed", "Semua baris gagal disintesis")
+        raise TtsError("piper_failed", "All lines failed to synthesize")
     if spoken and missing / spoken > max_failure_ratio:
         raise TtsError(
             "piper_failed",
-            f"{missing}/{spoken} baris gagal disintesis (> {max_failure_ratio:.0%}) — hasil akan penuh keheningan",
+            f"{missing}/{spoken} lines failed to synthesize (> {max_failure_ratio:.0%}) — the result would be full of silence",
         )
     if missing:
         log.warn(
-            f"{missing} baris gagal disintesis — celahnya dibiarkan hening (dilaporkan di callback)"
+            f"{missing} lines failed to synthesize — the gaps are left silent (reported in the callback)"
         )
     return results

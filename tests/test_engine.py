@@ -494,7 +494,7 @@ def test_config_voice_diluar_katalog_ditolak(monkeypatch, tmp_path):
     )
     with pytest.raises(config_mod.ConfigError) as e:
         config_mod.Config.load(tmp_path / "w", tmp_path / "o", tmp_path / "r.json")
-    assert "tidak dikenal" in e.value.message
+    assert "unknown voice" in e.value.message
 
 
 def test_config_music_default_on_dan_bisa_dimatikan(monkeypatch, tmp_path):

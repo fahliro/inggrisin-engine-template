@@ -69,7 +69,7 @@ def upload_result(
     auth_secret: str = "",
 ) -> UploadResult:
     if not path.exists() or path.stat().st_size == 0:
-        raise UploadError("drive_upload_failed", f"File hasil tidak ada atau kosong: {path}")
+        raise UploadError("drive_upload_failed", f"Result file missing or empty: {path}")
 
     t0 = time.monotonic()
     size = path.stat().st_size
@@ -84,7 +84,7 @@ def upload_result(
         if not token:
             raise UploadError(
                 "drive_auth",
-                "Tidak ada jalur unggah: INGGRISIN_RESULT_UPLOAD_URL kosong dan GOOGLE_ACCESS_TOKEN tidak disetel.",
+                "No upload path: INGGRISIN_RESULT_UPLOAD_URL is empty and GOOGLE_ACCESS_TOKEN is not set.",
             )
         res = _upload_direct_drive(log, token, path, name, content_type, size, extra_fields or {})
 
@@ -143,7 +143,7 @@ def _upload_via_proxy(
                 break
             last = f"init HTTP {r.status_code}: {r.text[:200]}"
             if 400 <= r.status_code < 500 and r.status_code != 429:
-                raise UploadError("drive_upload_failed", f"Proxy menolak init unggahan ({last})")
+                raise UploadError("drive_upload_failed", f"The proxy rejected the upload init ({last})")
         except requests.RequestException as e:
             last = f"init network {type(e).__name__}"
         if attempt < MAX_RETRIES:
@@ -152,7 +152,7 @@ def _upload_via_proxy(
             time.sleep(wait)
     if not session:
         raise UploadError(
-            "drive_upload_failed", f"Init unggahan gagal setelah {MAX_RETRIES} percobaan: {last}"
+            "drive_upload_failed", f"Upload init failed after {MAX_RETRIES} attempts: {last}"
         )
 
     log.info(f"sesi unggah dimulai; {size / 1e6:.1f} MB dalam chunk {chunk / 1e6:.0f} MB")
@@ -220,10 +220,10 @@ def _upload_via_proxy(
                 )
         if not ok and sent < size:
             raise UploadError(
-                "drive_upload_failed", f"Upload chunk gagal setelah {MAX_RETRIES} percobaan: {last}"
+                "drive_upload_failed", f"Chunk upload failed after {MAX_RETRIES} attempts: {last}"
             )
 
-    raise UploadError("drive_upload_failed", f"Upload tidak mengembalikan hasil final: {last}")
+    raise UploadError("drive_upload_failed", f"The upload did not return a final result: {last}")
 
 
 def _query_received(
@@ -269,7 +269,7 @@ def _upload_direct_drive(
     if size > 5 * 1024 * 1024:
         raise UploadError(
             "drive_upload_failed",
-            "Mode direct Drive hanya untuk file kecil (<5MB). Gunakan INGGRISIN_RESULT_UPLOAD_URL (proxy app).",
+            "Direct Drive mode is only for small files (<5MB). Use INGGRISIN_RESULT_UPLOAD_URL (the app proxy).",
         )
 
     folder = extra.get("drive_folder_id") or ""

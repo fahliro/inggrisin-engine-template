@@ -83,7 +83,7 @@ def probe_video(log: Logger, path: Path) -> VideoProbe:
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        raise VerticalError("ffmpeg_failed", f"ffprobe gagal: {proc.stderr.strip()[-300:]}")
+        raise VerticalError("ffmpeg_failed", f"ffprobe failed: {proc.stderr.strip()[-300:]}")
     data = json.loads(proc.stdout or "{}")
     w = h = 0
     fps = 0.0
@@ -99,7 +99,7 @@ def probe_video(log: Logger, path: Path) -> VideoProbe:
             break
     dur = float((data.get("format") or {}).get("duration") or 0.0)
     if w <= 0 or h <= 0:
-        raise VerticalError("ffmpeg_failed", "tidak ditemukan stream video di sumber")
+        raise VerticalError("ffmpeg_failed", "no video stream found in the source")
     return VideoProbe(width=w, height=h, duration_s=dur, fps=fps)
 
 
@@ -331,8 +331,8 @@ def render(log: Logger, cmd: list[str]) -> Path:
     if proc.returncode != 0:
         tail = "\n".join((proc.stderr or "").strip().splitlines()[-12:])
         raise VerticalError(
-            "vertical_render_failed", f"ffmpeg render gagal (exit {proc.returncode}):\n{tail}"
+            "vertical_render_failed", f"ffmpeg render failed (exit {proc.returncode}):\n{tail}"
         )
     if not out.exists() or out.stat().st_size == 0:
-        raise VerticalError("vertical_render_failed", "hasil render kosong")
+        raise VerticalError("vertical_render_failed", "render output is empty")
     return out

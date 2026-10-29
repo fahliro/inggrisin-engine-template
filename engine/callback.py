@@ -80,8 +80,8 @@ def send(
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(body) > MAX_BODY_BYTES:
         raise CallbackError(
-            f"payload {len(body)} byte melebihi batas {MAX_BODY_BYTES}. "
-            "Potong `segments` dan isi `overflow` sebelum mengirim."
+            f"payload of {len(body)} bytes exceeds the {MAX_BODY_BYTES} limit. "
+            "Trim `segments` and fill `overflow` before sending."
         )
 
     headers = _headers(secret, str(payload.get("job_id", "")), body, event, run_id, run_url)

@@ -73,7 +73,7 @@ def download(
             time.sleep(wait)
 
     raise DownloadError(
-        "source_download_failed", f"download gagal setelah {MAX_RETRIES} percobaan: {last_err}"
+        "source_download_failed", f"download failed after {MAX_RETRIES} attempts: {last_err}"
     )
 
 
@@ -94,15 +94,15 @@ def _attempt(
         if r.status_code == 404:
             raise DownloadError(
                 "source_download_failed",
-                "Link sumber tidak ditemukan atau sudah dipakai (sekali pakai). Jalankan ulang job dari dashboard.",
+                "The source link was not found or already used (single-use). Re-run the job from the dashboard.",
             )
         if r.status_code == 410:
             raise DownloadError(
-                "source_download_failed", "Link sumber kadaluarsa. Jalankan ulang job."
+                "source_download_failed", "The source link expired. Re-run the job."
             )
         if r.status_code >= 400:
             raise DownloadError(
-                "source_download_failed", f"Proxy mengembalikan HTTP {r.status_code}"
+                "source_download_failed", f"The proxy returned HTTP {r.status_code}"
             )
 
         content_type = r.headers.get("content-type")
@@ -110,7 +110,7 @@ def _attempt(
         if declared:
             declared_i = int(declared)
             if declared_i > HARD_LIMIT_BYTES:
-                raise DownloadError("source_too_large", f"File terlalu besar: {declared_i} byte")
+                raise DownloadError("source_too_large", f"File too large: {declared_i} bytes")
 
         with tmp.open("wb") as f:
             for chunk in r.iter_content(chunk_size=CHUNK):
@@ -122,11 +122,11 @@ def _attempt(
                 if total > HARD_LIMIT_BYTES:
                     f.close()
                     tmp.unlink(missing_ok=True)
-                    raise DownloadError("source_too_large", "File melebihi batas 6 GB")
+                    raise DownloadError("source_too_large", "File exceeds the 6 GB limit")
 
     if total == 0:
         tmp.unlink(missing_ok=True)
-        raise DownloadError("source_download_failed", "File sumber kosong (0 byte)")
+        raise DownloadError("source_download_failed", "Source file is empty (0 bytes)")
 
     if expected_bytes and total != expected_bytes:
         # bukan fatal — proxy bisa saja men-chunk berbeda; tapi patut dicatat
@@ -136,7 +136,7 @@ def _attempt(
     if expected_sha256 and digest != expected_sha256.lower():
         tmp.unlink(missing_ok=True)
         raise DownloadError(
-            "source_download_failed", "Checksum sha256 tidak cocok — file korup saat transfer"
+            "source_download_failed", "sha256 checksum mismatch — the file was corrupted in transfer"
         )
 
     tmp.replace(dest)

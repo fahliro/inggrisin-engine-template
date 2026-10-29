@@ -212,7 +212,7 @@ def _translate_chunk(
             last = f"network {type(e).__name__}"
             attempt += 1
             if attempt >= MAX_RETRIES:
-                raise GroqLlmError("llm_failed", f"Groq chat gagal: {last}") from e
+                raise GroqLlmError("llm_failed", f"Groq chat failed: {last}") from e
             _backoff(log, attempt, last)
             continue
 
@@ -243,8 +243,8 @@ def _translate_chunk(
             # kuota harian habis — retry membakar waktu tanpa hasil (§31: fail-fast)
             raise GroqLlmError(
                 "groq_daily_quota",
-                "Kuota harian Groq untuk model ini habis — coba lagi besok "
-                "(atau naikkan tier kunci Groq-mu di console.groq.com)",
+                "The daily Groq quota for this model is exhausted — try again "
+                "tomorrow (or raise your Groq key's tier at console.groq.com)",
             )
         if r.status_code == 404 or (r.status_code == 400 and "model_not_found" in r.text):
             raise GroqLlmError("llm_model_not_found", last)

@@ -103,7 +103,7 @@ class Config:
         def req(name: str) -> str:
             v = os.environ.get(name, "").strip()
             if not v:
-                raise ConfigError("missing_env", f"Environment {name} tidak diisi")
+                raise ConfigError("missing_env", f"Environment variable {name} is not set")
             return v
 
         def opt(name: str, default: str = "") -> str:
@@ -111,7 +111,7 @@ class Config:
 
         mode = (opt("INGGRISIN_MODE", "first") or "first").lower()
         if mode not in ("first", "revision"):
-            raise ConfigError("contract_mismatch", f"Mode tidak dikenal: {mode!r} (first|revision)")
+            raise ConfigError("contract_mismatch", f"Unknown mode: {mode!r} (first|revision)")
 
         # options = konstanta kontrak terkunci; tolak bila app mengirim lain
         try:
@@ -129,8 +129,8 @@ class Config:
             if not same:
                 raise ConfigError(
                     "contract_mismatch",
-                    f"options.{key}={got!r} tidak sesuai kontrak terkunci ({expect!r}) — "
-                    "parameter dubbing bukan input user (docs/01 §18)",
+                    f"options.{key}={got!r} violates the locked contract ({expect!r}) — "
+                    "dubbing parameters are not user input (docs/01 §18)",
                 )
 
         voice = opt("INGGRISIN_VOICE", LOCKED_VOICE)
@@ -140,14 +140,14 @@ class Config:
         if voice not in VOICES:
             raise ConfigError(
                 "contract_mismatch",
-                f"voice={voice!r} tidak dikenal; pilihan: {', '.join(sorted(VOICES))}",
+                f"unknown voice={voice!r}; choices: {', '.join(sorted(VOICES))}",
             )
 
         output_aspect = (opt("INGGRISIN_OUTPUT_ASPECT", "9:16") or "9:16").strip()
         if output_aspect not in ("9:16", "source"):
             raise ConfigError(
                 "contract_mismatch",
-                f"output_aspect={output_aspect!r} tidak dikenal; pilihan: 9:16, source",
+                f"unknown output_aspect={output_aspect!r}; choices: 9:16, source",
             )
 
         cfg = Config(
@@ -189,22 +189,22 @@ class Config:
         # validasi per mode
         if cfg.mode == "first":
             if not cfg.groq_api_key:
-                raise ConfigError("missing_env", "GROQ_API_KEY wajib untuk mode first (Whisper)")
+                raise ConfigError("missing_env", "GROQ_API_KEY is required for first mode (Whisper)")
             # §29: OpenRouter TIDAK lagi dipakai build pertama (whisper translate
             # langsung). Key tetap dibaca bila ada — tidak wajib.
         else:
             if cfg.revision_number <= 0:
                 raise ConfigError(
-                    "missing_env", "INGGRISIN_REVISION_NUMBER wajib > 0 untuk mode revision"
+                    "missing_env", "INGGRISIN_REVISION_NUMBER must be > 0 for revision mode"
                 )
             if not cfg.revisions_url:
                 raise ConfigError(
-                    "missing_env", "INGGRISIN_REVISIONS_URL wajib untuk mode revision"
+                    "missing_env", "INGGRISIN_REVISIONS_URL is required for revision mode"
                 )
             if not cfg.result_drive_file_id:
                 raise ConfigError(
                     "missing_env",
-                    "INGGRISIN_RESULT_DRIVE_FILE_ID wajib untuk mode revision (file yang ditimpa)",
+                    "INGGRISIN_RESULT_DRIVE_FILE_ID is required for revision mode (the file being overwritten)",
                 )
             # revision TANPA Groq/LLM — pastikan tidak ada yang mengira perlu
         workspace.mkdir(parents=True, exist_ok=True)

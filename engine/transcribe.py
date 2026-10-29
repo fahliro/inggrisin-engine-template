@@ -99,11 +99,11 @@ def transcribe_file(
     if size > MAX_UPLOAD_BYTES:
         raise TranscribeError(
             "groq_file_too_large",
-            f"File {size / 1e6:.1f} MB melebihi batas Groq 25 MB. Pipeline chunking seharusnya "
-            "menangani ini — periksa audio.needs_chunking().",
+            f"File of {size / 1e6:.1f} MB exceeds Groq's 25 MB limit. The chunking "
+            "pipeline should have handled this — check audio.needs_chunking().",
         )
     if size == 0:
-        raise TranscribeError("groq_file_too_large", "File audio kosong")
+        raise TranscribeError("groq_file_too_large", "Empty audio file")
 
     t0 = time.monotonic()
     mime = _mime_for(path)
@@ -155,28 +155,28 @@ def transcribe_file(
         if r.status_code in (401, 403):
             raise TranscribeError(
                 "groq_auth",
-                f"Groq menolak API key (HTTP {r.status_code}). Perbarui key di dashboard.",
+                f"Groq rejected the API key (HTTP {r.status_code}). Update the key on the dashboard.",
             )
         if r.status_code == 413:
             raise TranscribeError(
-                "groq_file_too_large", "Groq menolak: file terlalu besar (HTTP 413)"
+                "groq_file_too_large", "Groq rejected it: file too large (HTTP 413)"
             )
         if r.status_code == 422:
             raise TranscribeError(
-                "groq_failed", f"Groq tidak bisa memproses audio (HTTP 422): {_safe_detail(r)}"
+                "groq_failed", f"Groq could not process the audio (HTTP 422): {_safe_detail(r)}"
             )
         if r.status_code == 429:
             # rate limit → retryable, tapi jangan buang banyak percobaan
             if attempt == MAX_RETRIES:
                 raise TranscribeError(
-                    "groq_rate_limit", "Groq rate limit tercapai setelah beberapa percobaan", True
+                    "groq_rate_limit", "Groq rate limit hit after several attempts", True
                 )
             _backoff(log, attempt, "429 rate limit", base=4.0)
             continue
         if 500 <= r.status_code < 600:
             if attempt == MAX_RETRIES:
                 raise TranscribeError(
-                    "groq_failed", f"Groq error server (HTTP {r.status_code})", True
+                    "groq_failed", f"Groq server error (HTTP {r.status_code})", True
                 )
             _backoff(log, attempt, f"{r.status_code} server error")
             continue

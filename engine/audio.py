@@ -60,7 +60,7 @@ class Probe:
 def _require_ffmpeg() -> None:
     for tool in ("ffmpeg", "ffprobe"):
         if shutil.which(tool) is None:
-            raise AudioError("ffmpeg_failed", f"`{tool}` tidak ditemukan di runner")
+            raise AudioError("ffmpeg_failed", f"`{tool}` not found on the runner")
 
 
 def _run(log: Logger, cmd: list[str], step: str) -> subprocess.CompletedProcess[str]:
@@ -75,7 +75,7 @@ def _run(log: Logger, cmd: list[str], step: str) -> subprocess.CompletedProcess[
         # stderr ffmpeg panjang; ambil ekor saja dan jangan sampai memuat path rahasia
         tail = "\n".join(proc.stderr.strip().splitlines()[-12:])
         raise AudioError(
-            "ffmpeg_failed", f"ffmpeg gagal pada {step} (exit {proc.returncode}):\n{tail}"
+            "ffmpeg_failed", f"ffmpeg failed during {step} (exit {proc.returncode}):\n{tail}"
         )
     return proc
 
@@ -109,12 +109,12 @@ def probe(log: Logger, path: Path) -> Probe:
                 duration = d
                 break
     if duration <= 0:
-        raise AudioError("ffmpeg_failed", "Tidak bisa menentukan durasi media")
+        raise AudioError("ffmpeg_failed", "Could not determine the media duration")
 
     audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
     if not audio_streams:
-        raise AudioError("ffmpeg_failed", "File tidak punya track audio")
+        raise AudioError("ffmpeg_failed", "The file has no audio track")
 
     return Probe(
         duration_s=duration,
@@ -317,7 +317,7 @@ def split_chunks(
     )
     chunks = sorted(out_dir.glob("chunk_*.opus"))
     if not chunks:
-        raise AudioError("ffmpeg_failed", "segmentasi tidak menghasilkan chunk")
+        raise AudioError("ffmpeg_failed", "segmentation produced no chunks")
     log.info(f"audio dipecah jadi {len(chunks)} chunk @ {chunk_seconds}s")
     return chunks
 

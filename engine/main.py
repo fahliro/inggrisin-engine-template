@@ -145,7 +145,7 @@ def _tts_to_render(
 ) -> None:
     """Sintesis per baris → pasakan durasi (atempo ≤ 1,25) → rakit track → render."""
     step_ref[0] = "tts"
-    prog.stage("synthesizing", "Merekam suara Inggris (satu suara otomatis)")
+    prog.stage("synthesizing", "Recording the English voice (single automatic voice)")
     t = time.monotonic()
     lines = [s["text_en"] for s in segs]
     files = tts.synthesize_lines(log, cfg.voice, lines, cfg.lines_dir)
@@ -180,7 +180,7 @@ def _tts_to_render(
         log.warn(f"{missing} baris tanpa suara — celahnya hening (dilaporkan di callback)")
 
     step_ref[0] = "voice_track"
-    prog.stage("synthesizing", "Menyusun suara ke timeline asli")
+    prog.stage("synthesizing", "Laying the voice onto the original timeline")
     t = time.monotonic()
     audio.build_voice_track(log, placements, total_duration, cfg.voice_track_path)
     timings["voice_track_s"] = round(time.monotonic() - t, 2)
@@ -192,11 +192,11 @@ def _tts_to_render(
     final_audio = cfg.voice_track_path
     if cfg.options.get("music"):
         step_ref[0] = "music"
-        prog.stage("synthesizing", "Mempertahankan BGM/SFX asli")
+        prog.stage("synthesizing", "Keeping the original BGM/SFX")
         t = time.monotonic()
         with prog.heartbeat(
             "synthesizing",
-            "Mempertahankan BGM/SFX asli (audio panjang bisa beberapa menit)",
+            "Keeping the original BGM/SFX (long audio can take several minutes)",
             60,
         ):
             accom = audio.separate_accompaniment(
@@ -211,7 +211,7 @@ def _tts_to_render(
                 report.stage_done("music", timings["music_s"])
 
     step_ref[0] = "render"
-    prog.stage("rendering", "Menyusun video vertikal + menempel subtitle (satu pass)")
+    prog.stage("rendering", "Rendering the video + burning in subtitles (single pass)")
     t = time.monotonic()
     cues = [
         srt.Cue(idx=int(s["idx"]), start=float(s["start"]), end=float(s["end"]), text=s["text_en"])
@@ -284,7 +284,7 @@ def _upload(
 ) -> dict[str, Any]:
     from . import upload as upload_mod
 
-    prog.stage("uploading", "Menyimpan ke folder Drive-mu")
+    prog.stage("uploading", "Saving to your Drive folder")
     t = time.monotonic()
     extra = {"folder_id": cfg.drive_folder_id, "source_name": cfg.source_name}
     if overwrite_file_id:
@@ -326,7 +326,7 @@ def run_first(
     step_ref: list[str],
 ) -> dict[str, Any]:
     step_ref[0] = "download"
-    prog.stage("downloading", f"Mengunduh {cfg.source_name}")
+    prog.stage("downloading", f"Downloading {cfg.source_name}")
     t = time.monotonic()
     dl = download.download(
         log, cfg.source_url, cfg.source_path, cfg.source_bytes, cfg.source_sha256
@@ -344,7 +344,7 @@ def run_first(
     log.info(f"kanvas render: {target_wh[0]}x{target_wh[1]} (§35)")
 
     step_ref[0] = "extract"
-    prog.stage("downloading", "Memisahkan suara dari gambar")
+    prog.stage("downloading", "Separating audio from video")
     t = time.monotonic()
     audio_path, dur2 = audio.extract(log, cfg.source_path, cfg.audio_path, total_duration)
     total_duration = max(total_duration, dur2)
@@ -352,7 +352,7 @@ def run_first(
     report.stage_done("extract", timings["extract_s"], duration_s=round(total_duration, 1))
 
     step_ref[0] = "transcribe"
-    prog.stage("transcribing", "Mendengarkan ucapan Indonesia")
+    prog.stage("transcribing", "Listening to the speech")
     t = time.monotonic()
     # docs/01 §36: SATU pass Groq Whisper (transcribe saja) — teks asli +
     # timing kanonik (manifest). Terjemahan Inggris lahir 1:1 per segmen via
@@ -392,7 +392,7 @@ def run_first(
     timings["transcribe_s"] = round(time.monotonic() - t, 2)
     report.stage_done("transcribe", timings["transcribe_s"], segments=len(tr.segments))
     if not tr.text.strip():
-        raise RuntimeError("Transkrip kosong — video mungkin hanya musik/keheningan")
+        raise RuntimeError("Empty transcript — the video may be music/silence only")
 
     # Guard degenerasi single-pass (§36): tanpa telinga kedua, heuristik
     # keyakinan-ucapan + volume teks yang memutuskan (transcript_degenerate).
@@ -412,10 +412,10 @@ def run_first(
             tr = tr_auto
         else:
             raise RuntimeError(
-                "Transkrip Whisper degenerat di kedua varian (forced-id & auto-detect) — "
-                "decoder Groq gagal membaca audio ini (quirk §32). Dengan 1 pass (§36) "
-                "tidak ada telinga kedua; job digagalkan jelas daripada menerbitkan "
-                "teks karangan (§22)."
+                "The Whisper transcript degenerated in both variants (forced-id & "
+                "auto-detect) — Groq's decoder could not read this audio (quirk §32). "
+                "With a single pass (§36) there is no second ear; the job is failed "
+                "explicitly rather than publishing invented text (§22)."
             )
 
     # jejak mentah utk diagnosis pemotongan (§38): batas segmen persis Whisper
@@ -444,7 +444,7 @@ def run_first(
     # alat lain & test.
 
     step_ref[0] = "translate"
-    prog.stage("translating", "Menerjemahkan ke Inggris (gpt-oss via Groq)")
+    prog.stage("translating", "Translating into English (gpt-oss via Groq)")
     t = time.monotonic()
     items = [(r["idx"], r["text_id"], srt.budget_of(r["start"], r["end"])) for r in rows]
     en_map = groq_llm.translate_segments(
@@ -467,7 +467,7 @@ def run_first(
         empty=empty,
     )
     if empty == len(rows):
-        raise RuntimeError("Terjemahan LLM kosong — tidak ada teks Inggris yang dihasilkan")
+        raise RuntimeError("Empty LLM translation — no English text was produced")
 
     # manifest = sumber kebenaran timing, dikunci mulai sekarang
     manifest = {
@@ -542,17 +542,17 @@ def _fetch_revision(cfg: Config, log: Logger) -> dict[str, Any]:
             timeout=(15, 120),
         )
     except requests.RequestException as e:
-        raise RuntimeError(f"gagal menghubungi app untuk SRT revisi: {type(e).__name__}") from e
+        raise RuntimeError(f"failed to reach the app for the revision SRT: {type(e).__name__}") from e
     if r.status_code != 200:
-        raise RuntimeError(f"app menolak permintaan SRT revisi: HTTP {r.status_code}")
+        raise RuntimeError(f"the app rejected the revision SRT request: HTTP {r.status_code}")
     data = r.json()
     for field in ("srt", "manifest", "job_id", "revision_number"):
         if field not in data:
-            raise RuntimeError(f"payload revisi tidak lengkap: {field} hilang")
+            raise RuntimeError(f"incomplete revision payload: missing {field}")
     if str(data.get("job_id")) != cfg.job_id:
-        raise RuntimeError("job_id payload revisi tidak cocok dengan dispatch")
+        raise RuntimeError("revision payload job_id does not match the dispatch")
     if int(data.get("revision_number") or 0) != cfg.revision_number:
-        raise RuntimeError("revision_number payload tidak cocok dengan dispatch")
+        raise RuntimeError("revision payload revision_number does not match the dispatch")
     return data
 
 
@@ -565,7 +565,7 @@ def run_revision(
     step_ref: list[str],
 ) -> dict[str, Any]:
     step_ref[0] = "revision_fetch"
-    prog.stage("downloading", "Mengambil subtitle revisi")
+    prog.stage("downloading", "Fetching the revision subtitles")
     t = time.monotonic()
     payload = _fetch_revision(cfg, log)
     srt_text = str(payload["srt"])
@@ -587,7 +587,7 @@ def run_revision(
     report.stage_done("revision_fetch", timings["revision_fetch_s"], cues=len(cues))
 
     step_ref[0] = "download"
-    prog.stage("downloading", f"Mengambil video asli ({cfg.source_name})")
+    prog.stage("downloading", f"Fetching the original video ({cfg.source_name})")
     t = time.monotonic()
     dl = download.download(
         log, cfg.source_url, cfg.source_path, cfg.source_bytes, cfg.source_sha256
@@ -776,8 +776,8 @@ def main() -> int:
     try:
         prog.stage(
             "starting",
-            "Mesin dubbing mulai"
-            + (f" (revisi #{cfg.revision_number})" if cfg.mode == "revision" else ""),
+            "Dubbing engine starting"
+            + (f" (revision #{cfg.revision_number})" if cfg.mode == "revision" else ""),
         )
         result = (
             run_first(cfg, log, prog, report, timings, step_ref)
